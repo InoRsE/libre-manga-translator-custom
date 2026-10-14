@@ -4,3 +4,6 @@ node_modules
 .wxt
 *.lock*
 *-lock*
+test-results
+playwright-report
+tests/output
