@@ -9,7 +9,8 @@
     Square,
   } from "lucide-svelte";
   import { DefaultConfig } from "@/lib/configs";
-  import { MLCEngine } from "@mlc-ai/web-llm";
+  import { createLlmEngine } from "@/lib/llm-engine";
+  import type { MLCEngine } from "@mlc-ai/web-llm";
   import { isAbortError } from "@/lib/utils";
 
   let {
@@ -37,7 +38,7 @@
     llmProgress = 0;
     llmProgressText = "Initializing...";
     try {
-      llmEngine = new MLCEngine({
+      llmEngine = createLlmEngine({
         initProgressCallback: (p) => {
           llmProgress = Math.round((p.progress ?? 0) * 100);
           llmProgressText = p.text ?? "";

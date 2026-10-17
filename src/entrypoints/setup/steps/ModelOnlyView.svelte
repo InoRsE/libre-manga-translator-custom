@@ -9,6 +9,7 @@
     Square,
   } from "lucide-svelte";
   import { DefaultConfig } from "@/lib/configs";
+  import { createLlmEngine } from "@/lib/llm-engine";
   import { MLCEngine, deleteModelAllInfoInCache } from "@mlc-ai/web-llm";
   import { isAbortError } from "@/lib/utils";
 
@@ -29,6 +30,7 @@
     if (modelParam) {
       const found = DefaultConfig.llmModels.find((m) => m.id === modelParam);
       if (found) selectedLlmModel = found.id;
+      else selectedLlmModel = modelParam;
       if (params.get("clean") === "1") {
         cleanLlmModel();
       }
@@ -64,7 +66,7 @@
     llmProgress = 0;
     llmProgressText = "Initializing...";
     try {
-      llmEngine = new MLCEngine({
+      llmEngine = createLlmEngine({
         initProgressCallback: (p) => {
           llmProgress = Math.round((p.progress ?? 0) * 100);
           llmProgressText = p.text ?? "";

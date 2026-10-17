@@ -1,5 +1,6 @@
-import { MLCEngine } from "@mlc-ai/web-llm";
-import { DefaultConfig } from "./configs";
+import type { MLCEngine } from "@mlc-ai/web-llm";
+import { DefaultConfig, normalizeLlmModel } from "./configs";
+import { createLlmEngine } from "./llm-engine";
 import { buildSiteRulePrompts, buildTranslationPrompts } from "./prompts";
 import { parseLlmJson, validateTranslationResult } from "./server/validator";
 
@@ -14,6 +15,7 @@ export async function translateLocal(
   model = DefaultConfig.llmModels[0].id,
   temperature = DefaultConfig.llmTemperature,
 ): Promise<TranslateResult> {
+  const resolvedModel = normalizeLlmModel(model);
   if (!ocrResults || ocrResults.length === 0) {
     return { translations: [] };
   }
@@ -29,7 +31,7 @@ export async function translateLocal(
     systemPrompt,
     userPrompt,
     schema,
-    model,
+    resolvedModel,
     temperature,
   );
 
@@ -50,7 +52,7 @@ export async function translateLocal(
       systemPrompt,
       `${userPrompt}\n\nCORRECTION: Your previous response contained ${received} items but EXACTLY ${ocrResults.length} are required — one per input box, same order, empty boxes as "". Return the full corrected JSON now.`,
       schema,
-      model,
+      resolvedModel,
       temperature,
     );
     return validateTranslationResult(corrected, ocrResults.length);
@@ -65,6 +67,7 @@ export async function makeSiteRuleLocal(
   model = DefaultConfig.llmModels[0].id,
   temperature = DefaultConfig.llmTemperature,
 ): Promise<AIGeneratedRule> {
+  const resolvedModel = normalizeLlmModel(model);
   const { systemPrompt, userPrompt, schema } = buildSiteRulePrompts(
     title,
     path,
@@ -74,7 +77,7 @@ export async function makeSiteRuleLocal(
     systemPrompt,
     userPrompt,
     schema,
-    model,
+    resolvedModel,
     temperature,
   );
 }
@@ -87,7 +90,7 @@ async function runLLMModel(
   temperature: number,
 ) {
   if (!globalEngine) {
-    globalEngine = new MLCEngine();
+    globalEngine = createLlmEngine();
   }
 
   if (currentlyLoadedModel !== model) {

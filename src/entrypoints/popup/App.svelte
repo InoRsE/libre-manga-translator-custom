@@ -9,7 +9,7 @@
     Download,
     Compass,
   } from "lucide-svelte";
-  import { DefaultConfig, normalizeDetectionModel, resolveLangGroup } from "@/lib/configs";
+  import { DefaultConfig, normalizeDetectionModel, normalizeLlmModel, resolveLangGroup } from "@/lib/configs";
   import { normalizeInpaintMethod } from "@/lib/inpaint/ladder";
   import { env } from "@/lib/env";
   import { untrack, onMount } from "svelte";
@@ -187,7 +187,7 @@
       textFont = saved["sync:text-font"] ?? textFont;
       customFonts = Array.isArray(saved["local:custom-fonts"]) ? saved["local:custom-fonts"] : [];
       cachedLlms = Array.isArray(saved["local:cached-llms"]) ? saved["local:cached-llms"] : [];
-      llmModel = saved["sync:llm-model"] ?? llmModel;
+      llmModel = normalizeLlmModel(saved["sync:llm-model"] ?? llmModel);
       llmTemperature = saved["sync:llm-temperature"] ?? llmTemperature;
       serverHost = saved["local:server-host"] ?? serverHost;
       serverSchema = saved["local:server-schema"] ?? serverSchema;
