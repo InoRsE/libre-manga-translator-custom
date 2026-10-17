@@ -109,7 +109,7 @@ Mode determines the translate step:
 - **api** → `textRecognise()` → `translateWithServer()` (HTTP to external server)
 - **gemini** → `translateWithGemini()` (annotated image to Google, skips OCR)
 
-Shared prompts live in `src/lib/prompts.ts` (`buildTranslationPrompts`, `buildSiteRulePrompts`), used by both `webllm.ts` and `server/main.ts`. The offscreen document (`src/entrypoints/offscreen/main.ts`) switches on `currentMode` and serves `OFFSCREEN_*` handlers (WebGPU probe, model prefetch). Background (`src/entrypoints/background/index.ts`) forwards messages and handles `TEST_BACKEND`, `PREFETCH_MODEL` (legacy alias) / `START_MODEL_DOWNLOAD` (acked, with progress), `GET_MODEL_STATUSES` / `GET_ACTIVE_DOWNLOADS`, `GPU_STATE_CHANGED` / `CHECK_WEBGPU_SUPPORT`, and `PROXY_IMAGE` (SSRF-gated, see below).
+Shared prompts live in `src/lib/prompts.ts` (`buildTranslationPrompts`, `buildSiteRulePrompts`), used by both `webllm.ts` and `server/main.ts`. The offscreen document (`src/entrypoints/offscreen/main.ts`) switches on `currentMode` and serves `OFFSCREEN_*` handlers (WebGPU probe, model prefetch, inpainting). Background (`src/entrypoints/background/index.ts`) forwards messages and handles `TEST_BACKEND`, resumable downloads (`DOWNLOAD_START` / `DOWNLOAD_PAUSE` / `DOWNLOAD_DISCARD`, live `MODEL_DOWNLOAD_PROGRESS` to extension pages plus content-script tabs, real `GET_ACTIVE_DOWNLOADS`), `GET_MODEL_STATUSES`, `GPU_STATE_CHANGED` / `CHECK_WEBGPU_SUPPORT`, and `PROXY_IMAGE` (SSRF-gated, see below). Legacy `PREFETCH_MODEL` / `START_MODEL_DOWNLOAD` remain as fire-and-forget cache warmers.
 
 Content entry (`src/entrypoints/content/index.ts`) mounts the overlay, the sidebar (floating cog), and the hover floating trigger (`FloatingTrigger.svelte`, isolated ShadowRoot). Translation status is deduped through `src/entrypoints/content/translation-registry.ts` so hover, auto-translate, and popup actions never double-translate the same image.
 
@@ -117,7 +117,7 @@ Detection never sends an image anywhere. Detection and OCR run in a dedicated of
 
 ## Detection Models
 
-Two selectable detectors. Switch in **Vision › Detection › Model Selection** via the shared `ModelSelect` component (options from `DefaultConfig.detectionModels` in `src/lib/configs.ts`; per-model `Cached` badge plus inline download with streaming progress).
+Two selectable detectors. Switch in **Vision › Detection › Model Selection** via the shared `ModelSelect` component (options from `DefaultConfig.detectionModels` in `src/lib/configs.ts`; per-model `Cached` badge plus a single Download ⇄ Pause / Resume toggle with streaming progress — uncached rows cannot be selected).
 
 | Model | Size | License | Notes |
 |---|---|---|---|
@@ -188,6 +188,7 @@ LMT provides two independently selectable inpainting pipelines via `sync:inpaint
 - **Deep-Learning Model:** Runs `lama-manga-dynamic.onnx` (~207 MB download, ~500 MB RAM/VRAM, ONNX Runtime Web) across 512² tiles with 128px overlap.
 - **Target Use Case:** Complex screentones, halftones, cross-hatching, and textured artwork behind text where procedural algorithms leave blur or texture seams.
 - **Decoupled Fallback:** LaMa executes as a standalone first pass. If LaMa errors out, times out, or fails the quality check on a region, **only then** does that region fall back into the Fast engine ladder (Planar fill → Bilateral denoise → Telea). Quality is therefore a strict superset of Fast, while the Fast ladder remains 100% model-free.
+- **Missing-Weights Guard:** `OFFSCREEN_INPAINT_IMAGE` probes the LaMa cache before touching the model. Absent weights skip the neural pass entirely (no silent re-download, no error): the request runs the Fast ladder and `sync:inpaint-method` flips back to `"fast"` automatically.
 
 ### Quality Metric & Rollback
 Every attempt in both paths is validated against a single decline metric (`quality.ts`):
@@ -202,7 +203,7 @@ Post-translation editing operates across three visual layers: **Raw Scan** (orig
 - **Contextual Typography & Styling:** Selecting a bubble brings up `ContextualStyleBar` to tweak font family, size, line height, alignment, and color in-place, and `FloatingRawTextPill` to inspect the underlying OCR transcript.
 - **Multi-Layer Export:** The export action respects the active editor layer, allowing users to save the final result, the cleaned background, or the raw scan to JPEG.
 
-Method picker (`src/lib/components/settings/InpaintSettings.svelte`, under **Render › Inpainting**): **Fast** (model-free ladder, default) / **Quality** (LaMa neural redraw first, with Fast ladder fallback). Per-region provenance (`{method, deviation, thickness, ms}`) and per-rung counts surface in the debug panel.
+Method picker (`src/lib/components/settings/InpaintSettings.svelte`, under **Render › Inpainting**): **Fast** (model-free ladder, default) / **Quality** (LaMa neural redraw first, with Fast ladder fallback). Selecting Quality never auto-downloads — the single Download ⇄ Pause / Resume toggle is explicit opt-in. Per-region provenance (`{method, deviation, thickness, ms}`) and per-rung counts surface in the debug panel.
 
 ## Script Gate
 
@@ -212,13 +213,13 @@ Before translating, each region is checked against the source language: a lightw
 
 ## Model Storage & Cache Management
 
-**System › Model Storage** (`src/lib/components/settings/ModelStorageSettings.svelte`) lists every downloaded weight with its size plus a language badge parsed from the cached URL (`languages/<group>/` → language badge, otherwise model-name fallback), per-model delete and full cache clear. Detection, OCR, and backend pickers share `src/lib/components/ui/ModelSelect.svelte` (`Cached`/download + progress). Popup and sidebar prefetch OCR weights on language/engine change (source-language loader spins while the pack lands). Onboarding ships Latin + Chinese/Japanese PaddleOCR packs so the script gate flips between them with no mid-translate fetch; other packs download on first use while the overlay names the model being downloaded. Background prefetch (`START_MODEL_DOWNLOAD`, legacy `PREFETCH_MODEL` alias in `src/entrypoints/background/index.ts`) supports all model types so onboarding and settings can warm the cache. Translation results are keyed by series + chapter + resolved page + image hash, so re-opening a page reuses prior OCR/translation work.
+**System › Model Storage** (`src/lib/components/settings/ModelStorageSettings.svelte`) lists every downloaded weight with its size plus a language badge parsed from the cached URL (`languages/<group>/` → language badge, otherwise model-name fallback), per-model delete and full cache clear. Detection, OCR, and backend pickers share `src/lib/components/ui/ModelSelect.svelte` (`Cached` badge plus a single Download ⇄ Pause / Resume toggle with progress; popup Home quick-toggles additionally refuse to switch to an uncached target). Popup and sidebar prefetch OCR weights on language/engine change (source-language loader spins while the pack lands). Onboarding ships Latin + Chinese/Japanese PaddleOCR packs so the script gate flips between them with no mid-translate fetch; other packs download on first use while the overlay names the model being downloaded. All interactive downloads run through the background download manager (`src/entrypoints/background/index.ts`, client in `src/lib/download-client.ts`): one owner for setup wizard, popup, and sidebar, so Pause in any UI resumes in any other. Partials are retained per-URL in worker memory with `Range` resume (server ignoring `Range` restarts the file); latest click wins by auto-pausing the active job; deleting a weight rewinds covering jobs and drops partials so re-downloads start from scratch. Translation results are keyed by series + chapter + resolved page + image hash, so re-opening a page reuses prior OCR/translation work.
 
 ## Security Hardening
 
 - **SSRF-gated image proxy:** `PROXY_IMAGE` validates every URL with `isAllowedImageUrl()` (`src/lib/security.ts`) — `http(s)` allowlist only; rejects embedded credentials, loopback/local hostnames, RFC1918 private IPs, link-local/cloud-metadata ranges, integer/hex IP bypasses, and internal schemes; `data:`/`blob:` never proxied from background. Self-check: `bun run check` via `scripts/security-selfcheck.ts`.
 - **Strict translation schemas:** `validateTranslationResult(raw, expectedCount)` (`src/lib/server/validator.ts`) enforces `translations: string[]` with exact bbox-count equality plus optional `sourceTexts`/`context` checks; wired into `translateWithServer`, `translateLocal` (with null-content guard), and `translateWithGemini`. Self-check: `scripts/validator-selfcheck.ts`.
-- **SHA-256 download integrity:** known-hash manifest (`src/lib/manifests/hashes.ts`) verified in `downloadArtifactHF` (`src/lib/utils.ts`) via Web Crypto; mismatch evicts the cache entry and aborts session creation. Self-check: `scripts/hashes-selfcheck.ts`.
+- **SHA-256 download integrity:** known-hash manifest (`src/lib/manifests/hashes.ts`) verified in `downloadArtifactHF` (`src/lib/utils.ts`) via Web Crypto; mismatch evicts the cache entry and aborts session creation. Resumable streams (`streamArtifactToCache`) additionally refuse to cache any stream ending short of its advertised length, keeping the partial for Resume instead. Self-check: `scripts/hashes-selfcheck.ts`.
 
 ## Auto-Translate Engine
 
@@ -261,7 +262,7 @@ src/
     content/translation-registry.ts # Strict per-image status registry (idle/pending/done)
     offscreen/           # Isolated document: detection, OCR, gate, LLM inference, inpainting (OFFSCREEN_* handlers)
     popup/               # Extension popup (Home + Settings tabs, 360x540)
-    setup/               # Onboarding flow shown on first install (modular steps/ wizard)
+    setup/               # Onboarding flow shown on first install (modular steps/ wizard, opt-in per-step downloads via the background manager)
 
   lib/
     adapters.ts          # Trusted core rules + URL-to-metadata matching + container/image selectors
