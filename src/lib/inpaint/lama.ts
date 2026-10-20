@@ -1,5 +1,5 @@
 import * as ort from "onnxruntime-web/all";
-import { resolveExecutionProvidersForModel } from "../ort";
+import { resolveExecutionProvidersForModel } from "../hardware";
 import { downloadArtifactHF } from "../utils";
 import { DefaultConfig } from "../configs";
 import type { Fitted } from "./fit";

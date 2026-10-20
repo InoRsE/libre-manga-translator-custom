@@ -108,8 +108,8 @@ Libre Manga Translator coordinates vision, OCR, translation, and inpainting thro
 
 ### 🎯 Translation Modes & Flexibility
 - **Full Local Pipeline (WebGPU):** Comic Bubble Detector (RT-DETR, default) and Comic Text Detector run via ONNX Runtime Web. PaddleOCR extracts text on-device. Llama-3.2-1B, Qwen3.5-0.8B, Qwen3.5-2B, or Qwen3.5-4B translates via WebLLM with GPU acceleration. After the initial weights download, the entire workflow operates completely offline.
-- **Cloud Direct (Gemini):** Send annotated crops directly from your browser to Google's Gemini API with your own API key. Best for low-resource hardware without a dedicated GPU or when seeking state-of-the-art multimodal translation accuracy.
-- **API Mode (Self-Hosted):** Connect to your own LLM server running locally or across your LAN/WAN. Supports Ollama, LM Studio, vLLM, OpenRouter, Venice AI, and any OpenAI-compatible `/v1/chat/completions` endpoint.
+- **Cloud Direct (Gemini):** Your browser sends the **whole page image** to Google's Gemini API using your own API key — downscaled to ≤1024 px wide, re-encoded as JPEG at quality 0.75, with each detected region drawn on it as a numbered red box so the model can answer one translation per box — plus any series summary and term dictionary you have stored. It is not a crop, and the full artwork of that page leaves the device; nothing is sent until you pick this mode and paste a key. Best for low-resource hardware without a dedicated GPU, or when you want state-of-the-art multimodal translation accuracy.
+- **API Mode (Self-Hosted):** Connect to your own LLM server running locally or across your LAN/WAN. **Sends extracted text only** — the OCR strings from each box, the target language, and your series context. No page image, and no crop, leaves the device in this mode. Supports Ollama, LM Studio, vLLM, OpenRouter, Venice AI, and any OpenAI-compatible `/v1/chat/completions` endpoint.
 - **Dual Schema Support:** Seamlessly switch between standard OpenAI JSON (`response_format.json_object`) and LM Studio experimental format (`input` array + `system_prompt`) without modifying your underlying models.
 
 ### 👁️ Vision, Detection & OCR
@@ -149,9 +149,18 @@ Libre Manga Translator coordinates vision, OCR, translation, and inpainting thro
 
 ## Installation
 
-### From Source (Current Development Version)
+### From the browser stores (recommended)
 
-Requires [Bun](https://bun.sh).
+Both stores serve signed, auto-updating builds that survive a browser restart — no terminal, no build step:
+
+- **Chrome:** [Libre Manga Translator on the Chrome Web Store](https://chromewebstore.google.com/detail/libre-manga-translator/ojpfedogijigmfcpckgghdeepmpaikag)
+- **Firefox:** [Libre Manga Translator on Firefox Add-ons (AMO)](https://addons.mozilla.org/en-US/firefox/addon/libre-manga-translator/)
+
+After installing, jump to [First-time setup](#first-time-setup).
+
+### From source (development build)
+
+Use this only to run or hack on unreleased changes. Requires [Bun](https://bun.sh).
 
 ```bash
 git clone https://github.com/mrdhnto/libre-manga-translator.git
@@ -169,21 +178,21 @@ bun run build:firefox
 
 Copy `.env.example` to `.env` and fill in the values before building.
 
-### Chrome
+#### Chrome (load unpacked)
 
 1. Build the project: `bun run build`
 2. Open `chrome://extensions`
 3. Enable **Developer mode** (toggle in the top right)
 4. Click **Load unpacked** and select the `.output/chrome-mv3/` folder
 
-### Firefox
+#### Firefox (temporary add-on)
 
 1. Build the project: `bun run build:firefox`
 2. Open `about:debugging#/runtime/this-firefox`
 3. Click **Load Temporary Add-on**
 4. Select any file inside the `.output/firefox-mv2/` folder
 
-> Firefox temporary add-ons do not survive a browser restart. A signed Firefox release is planned for a future version.
+> Temporary add-ons are a development affordance and do not survive a browser restart. For day-to-day use, install the signed Firefox build from AMO above.
 
 ### First-time setup
 

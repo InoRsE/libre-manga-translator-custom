@@ -97,12 +97,15 @@ export async function sendRequestToGemini(
     data: string;
   },
 ): Promise<any> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  // Key travels in the header, never the URL: query strings are persisted in
+  // intermediary and server-side request logs.
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
     },
     body: JSON.stringify({
       systemInstruction: {

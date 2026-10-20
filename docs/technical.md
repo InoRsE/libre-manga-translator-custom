@@ -147,7 +147,7 @@ Storage key prefix: `sync:detection-*`. Cache keys include the resolved page ind
 
 Selectable in **Vision › Text Recognition (OCR) › OCR Engine** (`src/lib/components/settings/OcrSettings.svelte`, `ModelSelect`). Coordinator: `src/lib/ocr/main.ts`; backends implement `OcrEngine` (`src/lib/ocr/types.ts`): `src/lib/ocr/paddle.ts`, `src/lib/ocr/manga-ocr.ts`.
 
-In-tree runtime: line preprocessing, polarity normalization, CTC decoding, and dictionary matching run in native JS (`src/lib/ocr/paddle.ts`, `src/lib/ocr/utils.ts`); tensor math stays on ONNX Runtime Web (WASM, with WebGPU gating via `src/lib/hardware.ts`). Zero `eval` / `new Function` in `src/lib/ocr/**` — MV3 CSP is `script-src 'self' 'wasm-unsafe-eval'` only (`wxt.config.ts`). Third-party web PaddleOCR packages were audited and rejected (see `docs/ocr-runtime-audit.md`, `bun run check:ocr-audit`).
+In-tree runtime: line preprocessing, polarity normalization, CTC decoding, and dictionary matching run in native JS (`src/lib/ocr/paddle.ts`, `src/lib/ocr/utils.ts`); tensor math stays on ONNX Runtime Web (WASM, with WebGPU gating via `src/lib/hardware.ts`). Zero `eval` / `new Function` in `src/lib/ocr/**` — MV3 CSP is `script-src 'self' 'wasm-unsafe-eval'` only (`wxt.config.ts`). Third-party web PaddleOCR packages were audited and rejected (see `scripts/ocr-runtime-audit.ts`, `bun run check:ocr-audit`).
 
 | Engine | Size | Best for |
 |---|---|---|
@@ -218,7 +218,7 @@ Before translating, each region is checked against the source language: a lightw
 ## Security Hardening
 
 - **SSRF-gated image proxy:** `PROXY_IMAGE` validates every URL with `isAllowedImageUrl()` (`src/lib/security.ts`) — `http(s)` allowlist only; rejects embedded credentials, loopback/local hostnames, RFC1918 private IPs, link-local/cloud-metadata ranges, integer/hex IP bypasses, and internal schemes; `data:`/`blob:` never proxied from background. Self-check: `bun run check` via `scripts/security-selfcheck.ts`.
-- **Strict translation schemas:** `validateTranslationResult(raw, expectedCount)` (`src/lib/server/validator.ts`) enforces `translations: string[]` with exact bbox-count equality plus optional `sourceTexts`/`context` checks; wired into `translateWithServer`, `translateLocal` (with null-content guard), and `translateWithGemini`. Self-check: `scripts/validator-selfcheck.ts`.
+- **Strict translation schemas:** `validateTranslationResult(raw, expectedCount)` (`src/lib/server/validator.ts`) coerces every `translations` item to a string and heals count drift — short arrays are padded with `""`, extras truncated — so one merged-away bubble cannot fail a whole page; `sourceTexts`/`context` are validated when present. Pass `{ strict: true }` to throw on mismatch instead. Wired into `translateWithServer`, `translateLocal` (with null-content guard), and `translateWithGemini`. Self-check: `scripts/validator-selfcheck.ts` (`bun run check:validator`).
 - **SHA-256 download integrity:** known-hash manifest (`src/lib/manifests/hashes.ts`) verified in `downloadArtifactHF` (`src/lib/utils.ts`) via Web Crypto; mismatch evicts the cache entry and aborts session creation. Resumable streams (`streamArtifactToCache`) additionally refuse to cache any stream ending short of its advertised length, keeping the partial for Resume instead. Self-check: `scripts/hashes-selfcheck.ts`.
 
 ## Auto-Translate Engine
@@ -227,7 +227,7 @@ Orchestrator `src/entrypoints/content/auto-translate.ts` (`AutoTranslateOrchestr
 
 ## GPU Controls
 
-Shared probe and state live in `src/lib/hardware.ts` (LMT-authored): `checkWebGPUHighPerf()` requests a `high-performance` adapter and caches `true` only (`local:webgpu-supported`); `normalizeGpuState()` merges master + per-area overrides; `resolveExecutionProviders()` returns WebGPU-first or WASM-only. `src/lib/ort.ts` is the provider enforcer. UI: `src/lib/components/settings/GpuAccelerationPanel.svelte` (master `sync:webgpu-master` + `sync:webgpu-overrides {llm,inpaint,ocr}` + re-check probe) in sidebar **System** tab. Background/offscreen handlers: `CHECK_WEBGPU_SUPPORT`, `GPU_STATE_CHANGED`, `OFFSCREEN_*` prefetch/probe.
+Shared probe and state live in `src/lib/hardware.ts` (LMT-authored): `checkWebGPUHighPerf()` requests a `high-performance` adapter and caches `true` only (`local:webgpu-supported`); `normalizeGpuState()` merges master + per-area overrides; `resolveExecutionProviders()` returns WebGPU-first or WASM-only; `resolveExecutionProvidersForModel()` additionally gates known-bad operators (RT-DETR `ceil_mode=1`, LaMa FFC, `brainocr.onnx`) down to WASM. UI: `src/lib/components/settings/GpuAccelerationPanel.svelte` (master `sync:webgpu-master` + `sync:webgpu-overrides {llm,inpaint,ocr}` + re-check probe) in sidebar **System** tab. Background/offscreen handlers: `CHECK_WEBGPU_SUPPORT`, `GPU_STATE_CHANGED`, `OFFSCREEN_*` prefetch/probe.
 
 ## Environment Overrides
 
@@ -286,7 +286,6 @@ src/
     gemini/              # Gemini API client and prompt construction
     inpaint/             # Fast ladder + Quality LaMa-first: mask fit, ring stats, planar fill, denoise, LaMa, Telea, decline metric
     ocr/                 # main.ts (coordinator) + types.ts + paddle.ts + manga-ocr.ts + pororo.ts + utils.ts (in-tree JS CTC, zero eval)
-    ort.ts               # ONNX Runtime init + execution-provider resolution (delegates to hardware.ts)
     prompts.ts           # Shared prompt builders for all backends
     server/              # API Mode: schemas.ts + validator.ts + main.ts (Ollama/LM Studio)
     utils.ts             # Canvas painting, text fitting, bbox math, cache hashing, SHA-256-verified HF download

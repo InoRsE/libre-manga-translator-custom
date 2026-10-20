@@ -12,7 +12,7 @@
  */
 import * as ort from "onnxruntime-web/all";
 
-// Keep ort log level error-only (same as ort.ts legacy).
+// Keep ort log level error-only.
 ort.env.logLevel = "error";
 
 /**

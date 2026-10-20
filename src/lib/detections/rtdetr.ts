@@ -1,6 +1,6 @@
 import * as ort from "onnxruntime-web/all";
-import { fetchAsImageBitmap, yieldToMain } from "../utils";
-import { containmentNMS } from "./utils";
+import { yieldToMain } from "../utils";
+import { scalingImage, restoreBoundingBox, containmentNMS } from "./utils";
 import { refineDetections } from "./boxes";
 
 /**
@@ -8,22 +8,15 @@ import { refineDetections } from "./boxes";
  * Model: `detector-v4-s_int8.onnx` (Apache-2.0, ~11.1 MB).
  * Classes: 0: bubble, 1: text_bubble, 2: text_free.
  */
+const INPUT_SIZE = 640;
+
 export async function runRtDetrDetection(
   session: ort.InferenceSession,
   imageSrc: string,
   minConfidence = 0.35,
 ): Promise<Bbox[]> {
-  const bitmap = await fetchAsImageBitmap(imageSrc);
-  const origWidth = bitmap.width;
-  const origHeight = bitmap.height;
+  const { imageData, origWidth, origHeight } = await scalingImage(imageSrc, INPUT_SIZE);
 
-  const INPUT_SIZE = 640;
-  const canvas = new OffscreenCanvas(INPUT_SIZE, INPUT_SIZE);
-  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
-  ctx.drawImage(bitmap, 0, 0, INPUT_SIZE, INPUT_SIZE);
-  bitmap.close();
-
-  const imgData = ctx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
   const plane = INPUT_SIZE * INPUT_SIZE;
   const buffer = new Float32Array(3 * plane);
   const inv255 = 1.0 / 255.0;
@@ -31,15 +24,18 @@ export async function runRtDetrDetection(
   await yieldToMain();
   for (let i = 0; i < plane; i++) {
     const idx = i * 4;
-    buffer[i] = imgData.data[idx] * inv255;
-    buffer[plane + i] = imgData.data[idx + 1] * inv255;
-    buffer[plane * 2 + i] = imgData.data[idx + 2] * inv255;
+    buffer[i] = imageData.data[idx] * inv255;
+    buffer[plane + i] = imageData.data[idx + 1] * inv255;
+    buffer[plane * 2 + i] = imageData.data[idx + 2] * inv255;
   }
 
   await yieldToMain();
   let imageTensor: ort.Tensor | null = new ort.Tensor("float32", buffer, [1, 3, INPUT_SIZE, INPUT_SIZE]);
-  // Model contract measured: width first [origWidth, origHeight]
-  const sizeArray = new BigInt64Array([BigInt(origWidth), BigInt(origHeight)]);
+  // The model rescales its predictions into the size declared here. We fed it a
+  // letterboxed INPUT_SIZE square, so declare the square and undo the letterbox
+  // ourselves via restoreBoundingBox — declaring origWidth/origHeight here would
+  // re-apply an independent x/y stretch to boxes that already sit in letterbox space.
+  const sizeArray = new BigInt64Array([BigInt(INPUT_SIZE), BigInt(INPUT_SIZE)]);
   let sizeTensor: ort.Tensor | null = new ort.Tensor("int64", sizeArray, [1, 2]);
 
   const inNames = session.inputNames;
@@ -69,10 +65,23 @@ export async function runRtDetrDetection(
     if (score < minConfidence) continue;
     const label = Number(labelsData[i]);
 
-    const x1 = Math.max(0, Math.min(origWidth, boxesData[i * 4]));
-    const y1 = Math.max(0, Math.min(origHeight, boxesData[i * 4 + 1]));
-    const x2 = Math.max(0, Math.min(origWidth, boxesData[i * 4 + 2]));
-    const y2 = Math.max(0, Math.min(origHeight, boxesData[i * 4 + 3]));
+    const letterboxed = restoreBoundingBox(
+      {
+        x1: boxesData[i * 4],
+        y1: boxesData[i * 4 + 1],
+        x2: boxesData[i * 4 + 2],
+        y2: boxesData[i * 4 + 3],
+        confidence: score,
+      },
+      origWidth,
+      origHeight,
+      INPUT_SIZE,
+    );
+
+    const x1 = Math.max(0, Math.min(origWidth, letterboxed.x1));
+    const y1 = Math.max(0, Math.min(origHeight, letterboxed.y1));
+    const x2 = Math.max(0, Math.min(origWidth, letterboxed.x2));
+    const y2 = Math.max(0, Math.min(origHeight, letterboxed.y2));
     if (x2 - x1 < 4 || y2 - y1 < 4) continue;
 
     const box: Bbox = { x1, y1, x2, y2, confidence: score };

@@ -37,7 +37,6 @@ const ocrLangGroupMap: Record<string, string> = {
 
 export const DefaultConfig = {
   currentMode: "webgpu",
-  activeDevice: "cpu",
   sourceLang: "Auto-Detect",
   targetLang: "English",
 
