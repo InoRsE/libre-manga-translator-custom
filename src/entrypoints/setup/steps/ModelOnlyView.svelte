@@ -127,7 +127,7 @@
           Update Language Model
         </h2>
         <p class="text-xs text-[var(--text-muted)]">
-          Downloading new local inference model weights for WebGPU.
+          Downloading new local inference model weights for on-device translation.
         </p>
       </div>
     </div>

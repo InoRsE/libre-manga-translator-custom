@@ -1,5 +1,5 @@
 /**
- * Deterministic OpenAI-compatible stub for the live LLM tests (LMT-008).
+ * Deterministic OpenAI-compatible stub for the live LLM tests.
  *
  * Serves exactly the two routes the product hits — `GET /v1/models` for
  * `testServerConnection` and `POST /v1/chat/completions` for `callServer` — and

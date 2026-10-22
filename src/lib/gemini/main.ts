@@ -97,6 +97,16 @@ export async function sendRequestToGemini(
     data: string;
   },
 ): Promise<any> {
+  // Google API keys are printable ASCII. A key pasted with a stray space,
+  // zero-width character or smart quote would otherwise reach the header and
+  // make fetch() throw an opaque "invalid header value" TypeError.
+  const key = apiKey.trim();
+  if (!key || /[^\x21-\x7e]/.test(key)) {
+    throw new Error(
+      "Gemini API key is empty or contains invisible/non-ASCII characters — re-paste it",
+    );
+  }
+
   // Key travels in the header, never the URL: query strings are persisted in
   // intermediary and server-side request logs.
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
@@ -105,7 +115,7 @@ export async function sendRequestToGemini(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-goog-api-key": apiKey,
+      "x-goog-api-key": key,
     },
     body: JSON.stringify({
       systemInstruction: {

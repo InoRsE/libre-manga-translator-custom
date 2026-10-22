@@ -110,7 +110,15 @@ interface DebugEntry {
     skipped: number;
   };
   inpaintError?: string;
+  /** First real LaMa failure on the page. A size skip is a note, never this. */
   inpaintLamaError?: string;
+  /** Quality runs only: what the LaMa stage did, counted in boxes. */
+  lamaStages?: {
+    painted: number;
+    skippedSize: number;
+    failed: number;
+    notAttempted: number;
+  };
   models: {
     detection?: string;
     ocr?: string;

@@ -96,12 +96,22 @@ const targetLang = "English";
 // Probed at module load rather than in `beforeAll`: the skip decision has to
 // exist before the suite is declared. An early `return` inside a test body
 // still records a PASS, so an offline server used to look like green coverage.
-const liveServer = await testServerConnection(apiConfig).catch(() => null);
+// Bounded, because module load sits outside every test timeout: a listener
+// that accepts the socket but never answers would otherwise hang the run.
+const PROBE_TIMEOUT_MS = 3000;
+let probeTimer: ReturnType<typeof setTimeout> | undefined;
+const liveServer = await Promise.race([
+  testServerConnection(apiConfig).catch(() => null),
+  new Promise<null>((resolve) => {
+    probeTimer = setTimeout(() => resolve(null), PROBE_TIMEOUT_MS);
+  }),
+]);
+clearTimeout(probeTimer);
 const serverAvailable = liveServer?.success === true;
 
 if (!serverAvailable) {
   console.warn(
-    "Live LLM suite SKIPPED: nothing is serving http://localhost:8033/v1 (boot lmt-mock-server to run it)",
+    `Live LLM suite SKIPPED: nothing answered http://localhost:8033/v1 within ${PROBE_TIMEOUT_MS}ms (boot lmt-mock-server to run it)`,
   );
 }
 
