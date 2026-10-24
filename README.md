@@ -52,19 +52,7 @@ Detection, inpainting and typesetting are shared. Gate, OCR and translation are 
 
 In Gemini mode the Debug Panel reports the gate as `off` because nothing gated. OCR settings in **Vision › OCR** do not apply to it. Choose Gemini for its translation quality and its tolerance of weak hardware; choose Local or API when the script gate holding sound effects matters to you.
 
-### What actually runs on GPU
-
-GPU is opt-in per area (**System › GPU Acceleration**), and a model that WebGPU cannot execute is pinned to WASM CPU regardless. The list below is `WEBGPU_INCOMPATIBLE_MARKERS` in [src/lib/hardware.ts](src/lib/hardware.ts), mirrored by a test so it cannot drift silently:
-
-| Model | Stage | Provider when GPU is on | Reason |
-|---|---|---|---|
-| `detector-v4-s_int8.onnx` (RT-DETR, **default detector**) | Detection | WASM CPU | `MaxPool` with `ceil_mode=1` unsupported |
-| `chinese/rec.onnx` (Paddle Chinese pack — **also serves Japanese**) | OCR | WASM CPU | `MaxPool` with `ceil_mode=1` unsupported |
-| `brainocr.onnx` (Pororo) | OCR | WASM CPU | unsupported operator coverage |
-| `lama-manga*.onnx` (LaMa) | Inpaint | WASM CPU | FFC complex-`Add` has no JSEP kernel — `create()` succeeds, `run()` throws |
-| ComicTextDetector, script gate, other Paddle packs, PP-OCRv6, Manga-OCR, WebLLM | — | WebGPU, WASM fallback | — |
-
-`Japanese` resolves to the Chinese OCR pack (`ocrLangGroupMap` in [src/lib/configs.ts](src/lib/configs.ts)), so the most common source language is one of the denylisted ones. That is why the mode is called **Local**, not after one execution provider.
+*See **[docs/technical.md](docs/technical.md)** for what actualy run in GPU Mode*
 
 ---
 
@@ -176,6 +164,50 @@ Libre Manga Translator coordinates vision, OCR, translation, and inpainting thro
 - **Universal CORS & Anti-Hotlink Fallback:** Automatically circumvents CDN referer checks and Cloudflare protection via background declarativeNetRequest headers.
 - **Model Storage & GPU Controls:** Manage downloaded weights, view cache allocations, purge models (purging also clears any paused partial, so re-downloads start fresh), and toggle WebGPU/WASM acceleration per subsystem in **System › GPU Acceleration**.
 - **Detailed Diagnostics:** Exportable session logs detailing timings, OCR text, inpainting statistics, and error traces without storing image or base64 payloads.
+
+---
+
+## Roadmap & Status
+
+All core functionality is now fully released. Our current focus is actively improving OCR accuracy across diverse manga/manhwa formats, Bug Fixing and elevating the overall reader and editing experience. Check the [commit history](../../commits/main) for day-to-day activity between releases.
+
+### ✅ Released
+
+The core translation engine is complete, offering a production-grade, offline-first reader experience across Chrome and Firefox:
+
+- **Three Translation Modes** — 100% on-device local translation (WebLLM on GPU, ONNX Runtime on WebAssembly where a model needs it), private self-hosted servers (Ollama, LM Studio), or direct cloud translation (Gemini API).
+- **Vision & Multilingual OCR** — On-device speech bubble detection and multilingual text extraction (PaddleOCR, Japanese Manga-OCR, PP-OCRv6 Manga, and Korean Pororo OCR) with smart script filtering.
+- **Adaptive Inpainting & Redraw** — Seamless text removal using intelligent paper sampling and neural redraw (LaMa), backed by an "Always Inpaint" override for complex backgrounds.
+- **Multi-Layer Visual Canvas Editor** — In-place reader editor with layer switching (Raw, Cleaned, and Result), interactive inpaint patch/restore drawing tools, and contextual typography styling.
+- **Reader Automation & Ergonomics** — Zero-flicker hover translation trigger, continuous scroll auto-translation, series context memory, and one-click high-resolution image export.
+- **Resumable Downloads** — Opt-in model weights with cross-UI pause/resume (setup, popup, sidebar), cache-gated option switching, and automatic Fast fallback when LaMa weights are missing.
+- **Privacy by Design** — Zero telemetry, no analytics, no external servers, and completely local execution.
+
+### 🔧 In Progress
+
+- *Improve OCR Config* - Improving OCR reliability to get better translation results.
+- *Bug Fixing & Hardening* - Fixing bugs and improving stability and usability.
+
+### 🐛 Known Issues (actively investigating)
+
+- *OCR reliability on Manhwa / Webtoon text* - Pororo OCR still give poor results compared with Python Based Engine.
+- *Image Observer Failure* - Some site images are not detected by LMT Observer and the translation pill doesn't show up.
+
+Found a bug not listed here? Open an issue - it helps prioritize.
+
+### 🗺️ Planned
+
+- More community site adapters
+
+---
+### Known Limitations
+
+- **Firefox Add-on Store is bound to the `firefox-wllama-engine` branch:** We appealed to Mozilla for an exception to use the unified WebLLM engine (`main` branch), but their automated 2 MB per-file limit cannot be waived. To comply with store guidelines, the Firefox release uses `@wllama/wllama`.
+
+---
+
+*Status as of October 2026. This list changes as issues are found and fixed
+during dev testing - it's not a fixed commitment, just where things stand.*
 
 ---
 
@@ -376,49 +408,6 @@ Full annotated tree: [docs/technical.md](docs/technical.md).
 
 ---
 
-## Roadmap & Status
-
-All core functionality is now fully released. Our current focus is actively improving OCR accuracy across diverse manga/manhwa formats, Bug Fixing and elevating the overall reader and editing experience. Check the [commit history](../../commits/main) for day-to-day activity between releases.
-
-### ✅ Released
-
-The core translation engine is complete, offering a production-grade, offline-first reader experience across Chrome and Firefox:
-
-- **Three Translation Modes** — 100% on-device local translation (WebLLM on GPU, ONNX Runtime on WebAssembly where a model needs it), private self-hosted servers (Ollama, LM Studio), or direct cloud translation (Gemini API).
-- **Vision & Multilingual OCR** — On-device speech bubble detection and multilingual text extraction (PaddleOCR, Japanese Manga-OCR, PP-OCRv6 Manga, and Korean Pororo OCR) with smart script filtering.
-- **Adaptive Inpainting & Redraw** — Seamless text removal using intelligent paper sampling and neural redraw (LaMa), backed by an "Always Inpaint" override for complex backgrounds.
-- **Multi-Layer Visual Canvas Editor** — In-place reader editor with layer switching (Raw, Cleaned, and Result), interactive inpaint patch/restore drawing tools, and contextual typography styling.
-- **Reader Automation & Ergonomics** — Zero-flicker hover translation trigger, continuous scroll auto-translation, series context memory, and one-click high-resolution image export.
-- **Resumable Downloads** — Opt-in model weights with cross-UI pause/resume (setup, popup, sidebar), cache-gated option switching, and automatic Fast fallback when LaMa weights are missing.
-- **Privacy by Design** — Zero telemetry, no analytics, no external servers, and completely local execution.
-
-### 🔧 In Progress
-
-- *Improve OCR Config* - Improving OCR reliability to get better translation results.
-- *Bug Fixing & Hardening* - Fixing bugs and improving stability and usability.
-
-### 🐛 Known Issues (actively investigating)
-
-- *OCR reliability on Manhwa / Webtoon text* - Pororo OCR still give poor results compared with Python Based Engine.
-- *Image Observer Failure* - Some site images are not detected by LMT Observer and the translation pill doesn't show up.
-
-Found a bug not listed here? Open an issue - it helps prioritize.
-
-### 🗺️ Planned
-
-- More community site adapters
-
----
-### Known Limitations
-
-- **Firefox Add-on Store is bound to the `firefox-wllama-engine` branch:** We appealed to Mozilla for an exception to use the unified WebLLM engine (`main` branch), but their automated 2 MB per-file limit cannot be waived. To comply with store guidelines, the Firefox release uses `@wllama/wllama`.
-
----
-
-*Status as of October 2026. This list changes as issues are found and fixed
-during dev testing - it's not a fixed commitment, just where things stand.*
-
----
 
 ## Contributing
 

@@ -9,6 +9,7 @@ Developer-facing details for Libre Manga Translator: models, settings, pipeline 
   - [Tech Stack](#tech-stack)
   - [Pipeline](#pipeline)
     - [Stage coverage per mode](#stage-coverage-per-mode)
+    - [What actually runs on GPU](#what-actually-runs-on-gpu)
   - [Detection Models](#detection-models)
   - [Detection Settings](#detection-settings)
   - [OCR Engines](#ocr-engines)
@@ -16,6 +17,7 @@ Developer-facing details for Libre Manga Translator: models, settings, pipeline 
     - [1. Fast Mode (The Model-Free Engine Ladder, Default)](#1-fast-mode-the-model-free-engine-ladder-default)
     - [2. Quality Mode (Standalone Neural LaMa Redraw, Opt-In)](#2-quality-mode-standalone-neural-lama-redraw-opt-in)
     - [Quality Metric \& Rollback](#quality-metric--rollback)
+    - [Multi-Layer Canvas Editor \& Incremental Patches](#multi-layer-canvas-editor--incremental-patches)
   - [Script Gate](#script-gate)
   - [Model Storage \& Cache Management](#model-storage--cache-management)
   - [Security Hardening](#security-hardening)
@@ -135,6 +137,20 @@ Shared prompts live in `src/lib/prompts.ts` (`buildTranslationPrompts`, `buildSi
 Content entry (`src/entrypoints/content/index.ts`) mounts the overlay, the sidebar (floating cog), and the hover floating trigger (`FloatingTrigger.svelte`, isolated ShadowRoot). Translation status is deduped through `src/entrypoints/content/translation-registry.ts` so hover, auto-translate, and popup actions never double-translate the same image.
 
 Detection never sends an image anywhere. Detection and OCR run in a dedicated offscreen document, keeping inference off the page thread and away from the popup UI.
+
+### What actually runs on GPU
+
+GPU is opt-in per area (**System › GPU Acceleration**), and a model that WebGPU cannot execute is pinned to WASM CPU regardless. The list below is `WEBGPU_INCOMPATIBLE_MARKERS` in [src/lib/hardware.ts](src/lib/hardware.ts), mirrored by a test so it cannot drift silently:
+
+| Model | Stage | Provider when GPU is on | Reason |
+|---|---|---|---|
+| `detector-v4-s_int8.onnx` (RT-DETR, **default detector**) | Detection | WASM CPU | `MaxPool` with `ceil_mode=1` unsupported |
+| `chinese/rec.onnx` (Paddle Chinese pack — **also serves Japanese**) | OCR | WASM CPU | `MaxPool` with `ceil_mode=1` unsupported |
+| `brainocr.onnx` (Pororo) | OCR | WASM CPU | unsupported operator coverage |
+| `lama-manga*.onnx` (LaMa) | Inpaint | WASM CPU | FFC complex-`Add` has no JSEP kernel — `create()` succeeds, `run()` throws |
+| ComicTextDetector, script gate, other Paddle packs, PP-OCRv6, Manga-OCR, WebLLM | — | WebGPU, WASM fallback | — |
+
+`Japanese` resolves to the Chinese OCR pack (`ocrLangGroupMap` in [src/lib/configs.ts](src/lib/configs.ts)), so the most common source language is one of the denylisted ones. That is why the mode is called **Local**, not after one execution provider.
 
 ## Detection Models
 
