@@ -14,7 +14,7 @@ export default defineConfig({
   manifest: {
     name: "Libre Manga Translator",
     version_name: pkg.version,
-    description: "Privacy-focused manga translator: local WebGPU, Gemini cloud, or self-hosted LLM",
+    description: "Free Privacy-focused AI manga translator: local WebGPU, Gemini cloud, or self-hosted LLM",
     permissions: [
       "activeTab",
       "offscreen",
