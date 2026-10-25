@@ -98,6 +98,10 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
         await yieldToMain();
         const tTrans = performance.now();
         const backend = await detectBackend();
+        if (backend === "wasm") {
+          sendResponse({ error: "Local AI requires WebGPU — not available in this context. Check chrome://gpu or switch to Gemini / API mode." });
+          return;
+        }
         try {
           const res = await translateLocal(
             ocrResults.map((r) => (r.gateSkip ? "" : r.text)),
@@ -199,9 +203,15 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
     const { title, path } = msg.data;
 
     if (currentMode === "webgpu") {
-      makeSiteRuleLocal(title, path, llmModel, llmTemperature)
-        .then(sendResponse)
-        .catch((err) => sendResponse({ error: err.message }));
+      detectBackend().then((backend) => {
+        if (backend === "wasm") {
+          sendResponse({ error: "Local AI requires WebGPU — not available in this context. Check chrome://gpu or switch to Gemini / API mode." });
+          return;
+        }
+        makeSiteRuleLocal(title, path, llmModel, llmTemperature)
+          .then(sendResponse)
+          .catch((err) => sendResponse({ error: err.message }));
+      });
     } else if (currentMode === "api") {
       makeSiteRuleWithServer(title, path, serverConfig(msg.config))
         .then(sendResponse)

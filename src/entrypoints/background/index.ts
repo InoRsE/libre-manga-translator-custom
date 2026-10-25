@@ -466,9 +466,14 @@ export default defineBackground(() => {
       const inpaintBoxes = Array.isArray(msg.data?.bboxes)
         ? msg.data.bboxes.length
         : 0;
+      const isLocalTranslate =
+        msg.type === "TRANSLATE_IMAGE" &&
+        (msg.config?.currentMode === "webgpu" || !msg.config?.currentMode);
       const timeoutMs =
         msg.type === "INPAINT_IMAGE" && msg.data?.method === "quality"
           ? Math.max(300_000, inpaintBoxes * 60_000)
+          : isLocalTranslate
+            ? 480_000
           : msg.type === "TRANSLATE_IMAGE" || msg.type === "INPAINT_IMAGE"
             ? 180_000
             : 90_000;
@@ -741,11 +746,15 @@ export default defineBackground(() => {
       const task = async () => {
         const { isLlm, modelId, cacheName, url } = msg.data;
         if (isLlm && modelId) {
-          await ensureOffscreen();
-          await browser.runtime.sendMessage({
-            type: "OFFSCREEN_DELETE_LLM_CACHE",
-            data: { modelId },
-          });
+          // Firefox has no offscreen API — skip WebLLM cache purge (no LLM
+          // weights exist there anyway); just prune the storage record.
+          if ((browser as any).offscreen) {
+            await ensureOffscreen();
+            await browser.runtime.sendMessage({
+              type: "OFFSCREEN_DELETE_LLM_CACHE",
+              data: { modelId },
+            });
+          }
           const items = await storage.getItems(["local:cached-llms"]);
           const cached = (items[0]?.value as string[]) || [];
           await storage.setItem(
