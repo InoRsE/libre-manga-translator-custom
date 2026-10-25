@@ -82,7 +82,30 @@
 
   const rawDisplaySrc = $derived(rawImageUrl || originalSrc);
 
-  let toolbarPosition = $state({ x: 0, y: 12 }); // center-top initial, viewport-relative
+  function getInitialToolbarPosition(): { x: number; y: number } {
+    try {
+      const saved = localStorage.getItem("lmt-toolbar-pos");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed?.x === "number" && typeof parsed?.y === "number") {
+          return {
+            x: Math.max(16, Math.min(window.innerWidth - 380, parsed.x)),
+            y: Math.max(80, Math.min(window.innerHeight - 90, parsed.y)),
+          };
+        }
+      }
+    } catch {}
+
+    // Default to Bottom-Left of the target manga/viewport
+    const defaultX = Math.max(16, Math.min(window.innerWidth - 380, targetImageRect.left + 20));
+    const defaultY = Math.min(
+      window.innerHeight - 95,
+      Math.max(80, targetImageRect.bottom - 95)
+    );
+    return { x: defaultX, y: defaultY };
+  }
+
+  let toolbarPosition = $state(getInitialToolbarPosition());
   let toolbarDragStart = $state<{ startX: number; startY: number; initialX: number; initialY: number } | null>(null);
   let readingDirection = $state<"rtl" | "ltr">("rtl");
   let mode = $state<"loading" | "refining" | "results" | "editing">("loading");
@@ -820,8 +843,8 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
           const dx = e.clientX - toolbarDragStart.startX;
           const dy = e.clientY - toolbarDragStart.startY;
           toolbarPosition = {
-            x: toolbarDragStart.initialX + dx,
-            y: toolbarDragStart.initialY + dy,
+            x: Math.max(10, Math.min(window.innerWidth - 320, toolbarDragStart.initialX + dx)),
+            y: Math.max(10, Math.min(window.innerHeight - 80, toolbarDragStart.initialY + dy)),
           };
           return;
         }
@@ -879,6 +902,11 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
           isManuallySorted = true;
           saveHistory();
         }
+      }
+      if (toolbarDragStart) {
+        try {
+          localStorage.setItem("lmt-toolbar-pos", JSON.stringify(toolbarPosition));
+        } catch {}
       }
       dragInfo = null;
       toolbarDragStart = null;
@@ -1042,6 +1070,7 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
       canRedo={historyIndex < history.length - 1}
       position={toolbarPosition}
       isDragActive={dragInfo !== null}
+      isDraggingToolbar={toolbarDragStart !== null}
       {readingDirection}
       onDragStart={(e) => {
         toolbarDragStart = {

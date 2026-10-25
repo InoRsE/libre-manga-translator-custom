@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Sparkles, LoaderCircle } from "lucide-svelte";
+  import { Sparkles, LoaderCircle, GripVertical } from "lucide-svelte";
   import { isPending as isRegistryPending } from "@/entrypoints/content/translation-registry";
   import { getElementSrc, type MangaTargetElement } from "@/lib/canvas";
 
@@ -26,6 +26,23 @@
   // auto-queue). Hover takes over while hovering; pointer-leave snaps back.
   let autoImg = $state<MangaTargetElement | null>(null);
   let hoverImg = $state<MangaTargetElement | null>(null);
+
+  let dragOffset = $state<{ x: number; y: number } | null>(null);
+  let isDraggingTrigger = $state(false);
+  let triggerDragStart: { mouseX: number; mouseY: number; initialX: number; initialY: number } | null = null;
+
+  try {
+    const saved = localStorage.getItem("lmt-trigger-pos");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (typeof parsed?.x === "number" && typeof parsed?.y === "number") {
+        dragOffset = {
+          x: Math.max(8, Math.min(window.innerWidth - 120, parsed.x)),
+          y: Math.max(8, Math.min(window.innerHeight - 48, parsed.y)),
+        };
+      }
+    }
+  } catch {}
 
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   function cancelHide() {
@@ -80,13 +97,47 @@
     return q;
   }
 
+  function handleDragStart(e: MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    isDraggingTrigger = true;
+    triggerDragStart = {
+      mouseX: e.clientX,
+      mouseY: e.clientY,
+      initialX: x,
+      initialY: y,
+    };
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!triggerDragStart) return;
+      const dx = moveEvent.clientX - triggerDragStart.mouseX;
+      const dy = moveEvent.clientY - triggerDragStart.mouseY;
+      x = Math.max(8, Math.min(window.innerWidth - 140, triggerDragStart.initialX + dx));
+      y = Math.max(8, Math.min(window.innerHeight - 48, triggerDragStart.initialY + dy));
+      dragOffset = { x, y };
+    };
+
+    const handleMouseUp = () => {
+      isDraggingTrigger = false;
+      triggerDragStart = null;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      if (dragOffset) {
+        try {
+          localStorage.setItem("lmt-trigger-pos", JSON.stringify(dragOffset));
+        } catch {}
+      }
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  }
+
   function showFor(img: MangaTargetElement, auto: boolean) {
     cancelHide();
-    const rect = img.getBoundingClientRect();
     targetImg = img;
     if (auto) autoImg = img;
-    x = rect.left + 8;
-    y = rect.top + 8;
+    updatePosition();
     visible = true;
     if (adoptMode(img) === "translated") {
       if (auto) autoImg = null;
@@ -157,9 +208,21 @@
 
   function updatePosition() {
     if (visible && targetImg && document.body.contains(targetImg)) {
+      if (dragOffset) {
+        x = dragOffset.x;
+        y = dragOffset.y;
+        return;
+      }
       const rect = targetImg.getBoundingClientRect();
-      x = rect.left + 8;
-      y = rect.top + 8;
+      const buttonHeight = 36;
+      const margin = 16;
+      // Position at bottom-left of the manga element or viewport
+      const maxBottom = Math.min(rect.bottom, window.innerHeight);
+      const targetY = maxBottom - buttonHeight - margin;
+
+      x = Math.max(16, rect.left + margin);
+      // Keep at least 80px below viewport top to prevent triggering site top headers/banners
+      y = Math.max(80, targetY);
     }
   }
 
@@ -313,7 +376,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     role="presentation"
-    class="lmt-floating-root fixed z-[999999] pointer-events-auto select-none transition-opacity duration-200"
+    class="lmt-floating-root fixed z-[999999] pointer-events-auto select-none transition-opacity duration-200 {isDraggingTrigger ? 'cursor-grabbing' : ''}"
     style="top: {Math.max(8, y)}px; left: {Math.max(8, x)}px;"
     onmouseenter={cancelHide}
     onmouseleave={scheduleHide}
@@ -324,12 +387,23 @@
       e.preventDefault();
     }}
   >
-    <div class="flex items-center rounded-lg">
+    <div class="flex items-center rounded-lg bg-[var(--surface-panel)] border border-[var(--border-line)] shadow-lg overflow-hidden">
+      <!-- Drag Handle -->
+      <button
+        type="button"
+        onmousedown={handleDragStart}
+        class="pl-1.5 pr-0.5 py-1 text-[var(--text-muted)] hover:text-[var(--accent-cyan)] cursor-grab active:cursor-grabbing flex items-center transition-colors border-r border-[var(--border-line)]/50"
+        title="Drag to move button (可拖拽自由移动)"
+        aria-label="Drag to move"
+      >
+        <GripVertical size={13} />
+      </button>
+
       <!-- Main Trigger Button -->
       <button
         type="button"
         onclick={handleTriggerClick}
-        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold tracking-wide transition-all cursor-pointer border {status === 'translating' ? 'bg-[var(--surface-panel)] text-[var(--accent-cyan)] border-[var(--accent-cyan-glow)] cursor-wait' : 'bg-[var(--surface-panel)] text-[var(--text-primary)] border-[var(--border-line)] hover:border-[var(--accent-amber)] hover:text-[var(--accent-amber)] hover:shadow-[0_0_12px_var(--accent-amber-glow)]'}"
+        class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold tracking-wide transition-all cursor-pointer {status === 'translating' ? 'text-[var(--accent-cyan)] cursor-wait' : 'text-[var(--text-primary)] hover:text-[var(--accent-amber)] hover:shadow-[0_0_12px_var(--accent-amber-glow)]'}"
         title={status === 'translating' ? progressText : 'Translate manga image'}
       >
         {#if status === "translating"}

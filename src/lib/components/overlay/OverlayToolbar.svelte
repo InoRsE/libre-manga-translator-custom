@@ -26,6 +26,7 @@
     showOriginal?: boolean;
     position?: { x: number; y: number };
     isDragActive?: boolean;
+    isDraggingToolbar?: boolean;
     readingDirection?: "rtl" | "ltr";
     onDragStart?: (e: MouseEvent) => void;
     onAddBox?: () => void;
@@ -52,6 +53,7 @@
     showOriginal = false,
     position = { x: 0, y: 0 },
     isDragActive = false,
+    isDraggingToolbar = false,
     readingDirection = "rtl",
     onDragStart,
     onAddBox,
@@ -84,9 +86,10 @@
 
 {#if mode === "refining"}
   <div
-    class="fixed z-60 flex items-center gap-2 transition-all duration-200 select-none flex-col pointer-events-auto
-           {isDragActive ? 'opacity-30 pointer-events-none' : ''}"
-    style="transform: translate({position.x}px, {position.y}px);"
+    class="fixed z-60 flex items-center gap-2 select-none flex-col pointer-events-auto
+           {isDragActive ? 'opacity-30 pointer-events-none' : ''}
+           {isDraggingToolbar ? 'transition-none cursor-grabbing' : 'transition-all duration-150'}"
+    style="left: {position.x}px; top: {position.y}px;"
     onmousedown={trapEvent}
     onpointerdown={trapEvent}
     onclick={(e) => {
@@ -99,6 +102,17 @@
     <div
       class="relative flex items-center gap-1.5 p-1 rounded-[6px] border border-[var(--border-line)] bg-[var(--surface-panel)] backdrop-blur-md shadow-[0_12px_40px_rgba(0,0,0,0.7),0_0_16px_var(--accent-cyan-glow)]"
     >
+      <!-- Main Toolbar Drag Handle -->
+      <button
+        type="button"
+        onmousedown={onDragStart}
+        title="Drag to move toolbar anywhere (可拖拽自由移动)"
+        class="h-8 px-1.5 inline-flex items-center justify-center rounded-[3px] text-[var(--text-muted)] hover:text-[var(--accent-cyan)] hover:bg-[var(--surface-panel)] transition-colors cursor-grab active:cursor-grabbing border border-transparent hover:border-[var(--border-line)] shrink-0"
+        aria-label="Drag toolbar"
+      >
+        <GripVertical size={14} />
+      </button>
+
       <!-- Add Box -->
       <button
         type="button"
@@ -231,7 +245,7 @@
 {:else if mode === "results"}
   <!-- Floating Action Cluster on Results -->
   <div
-    class="absolute left-2.5 top-2.5 flex flex-col gap-1 z-50 select-none pointer-events-auto"
+    class="absolute left-2.5 bottom-2.5 flex flex-col gap-1 z-50 select-none pointer-events-auto"
     onclick={(e) => {
       e.stopPropagation();
       e.preventDefault();
