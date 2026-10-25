@@ -20,7 +20,9 @@ import {
   resolveImagePageIndex,
   fetchAsImageBitmap,
   inpaintBbox,
+  type MangaTargetElement,
 } from "./utils";
+import { getElementSrc } from "@/lib/canvas";
 import "@/assets/app.css";
 
 const srcKey = (src: string) =>
@@ -30,15 +32,28 @@ const srcKey = (src: string) =>
 // Measuring a hidden/not-yet-loaded image freezes the wrapper at 0×0 and
 // misplaces the whole overlay on revisit.
 async function waitForLaidOutImage(
-  img: HTMLImageElement,
+  img: MangaTargetElement,
   timeoutMs = 3000,
 ): Promise<boolean> {
-  const ready = () =>
-    document.body.contains(img) &&
-    img.complete &&
-    img.naturalWidth > 0 &&
-    img.getBoundingClientRect().width > 0 &&
-    img.getBoundingClientRect().height > 0;
+  const ready = () => {
+    const naturalW = "naturalWidth" in img ? img.naturalWidth : img.width;
+    const naturalH = "naturalHeight" in img ? img.naturalHeight : img.height;
+    const rect = img.getBoundingClientRect();
+    const inViewport =
+      rect.right > 4 &&
+      rect.bottom > 4 &&
+      rect.left < window.innerWidth - 4 &&
+      rect.top < window.innerHeight - 4;
+    return (
+      document.body.contains(img) &&
+      ("complete" in img ? img.complete : true) &&
+      naturalW > 0 &&
+      naturalH > 0 &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      (img instanceof HTMLCanvasElement ? inViewport : true)
+    );
+  };
   if (ready()) return true;
   const start = performance.now();
   while (performance.now() - start < timeoutMs) {
@@ -47,6 +62,77 @@ async function waitForLaidOutImage(
     if (ready()) return true;
   }
   return ready();
+}
+
+async function captureTaintedCanvas(
+  canvasEl: HTMLCanvasElement,
+): Promise<string | null> {
+  try {
+    const rect = canvasEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    if (
+      rect.right <= 0 ||
+      rect.bottom <= 0 ||
+      rect.left >= window.innerWidth ||
+      rect.top >= window.innerHeight
+    ) {
+      return null;
+    }
+
+    const floatingHosts = document.querySelectorAll<HTMLElement>(
+      "lmt-floating-trigger, lmt-sidebar",
+    );
+    const prevVisibility: string[] = [];
+    floatingHosts.forEach((h, i) => {
+      prevVisibility[i] = h.style.visibility;
+      h.style.visibility = "hidden";
+    });
+
+    await new Promise<void>((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r())),
+    );
+
+    let res: { dataUrl?: string; error?: string } | undefined;
+    try {
+      res = await browser.runtime.sendMessage({
+        type: "CAPTURE_VISIBLE_TAB",
+      });
+    } finally {
+      floatingHosts.forEach((h, i) => {
+        h.style.visibility = prevVisibility[i] || "";
+      });
+    }
+
+    if (!res?.dataUrl) return null;
+
+    const bitmap = await fetchAsImageBitmap(res.dataUrl);
+    try {
+      const dpr = window.devicePixelRatio || 1;
+      const sx = Math.max(0, Math.round(rect.left * dpr));
+      const sy = Math.max(0, Math.round(rect.top * dpr));
+      const sw = Math.min(bitmap.width - sx, Math.round(rect.width * dpr));
+      const sh = Math.min(bitmap.height - sy, Math.round(rect.height * dpr));
+      if (sw <= 0 || sh <= 0) return null;
+
+      const outW = canvasEl.width || Math.round(rect.width);
+      const outH = canvasEl.height || Math.round(rect.height);
+      const outCanvas = document.createElement("canvas");
+      outCanvas.width = outW;
+      outCanvas.height = outH;
+      const ctx = outCanvas.getContext("2d");
+      if (!ctx) return null;
+
+      ctx.fillStyle = "white";
+      ctx.fillRect(0, 0, outW, outH);
+      ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, outW, outH);
+      return outCanvas.toDataURL("image/jpeg", 0.95);
+    } finally {
+      bitmap.close?.();
+    }
+  } catch (err) {
+    console.warn("LMT: captureTaintedCanvas failed:", err);
+    return null;
+  }
 }
 
 export default defineContentScript({
@@ -83,10 +169,12 @@ export default defineContentScript({
       ui.mount();
     });
 
-    async function startTranslationPipeline(imgElement: HTMLImageElement) {
+    async function startTranslationPipeline(imgElement: MangaTargetElement) {
       if (!imgElement || !document.body.contains(imgElement)) return;
-      const clicked = srcKey(imgElement.src);
-      const originalSrc = (clicked && translatedSrcMap.get(clicked)) ?? clicked;
+      const rawSrc = getElementSrc(imgElement);
+      if (!rawSrc) return;
+      const clicked = srcKey(rawSrc);
+      const originalSrc = (clicked && translatedSrcMap.get(clicked)) ?? rawSrc;
       if (!originalSrc) return;
 
       // ── Strict early registry guard (LMT-only, no page-world exposure) ──
@@ -167,6 +255,14 @@ export default defineContentScript({
         const dataUrl = imageToBase64(imgElement);
         if (dataUrl) {
           src = dataUrl;
+        } else if (imgElement instanceof HTMLCanvasElement) {
+          const captured = await captureTaintedCanvas(imgElement);
+          if (captured) {
+            src = captured;
+          } else {
+            Registry.markIdle(originalSrc);
+            return;
+          }
         } else {
           try {
             const res = await browser.runtime.sendMessage({
@@ -197,8 +293,10 @@ export default defineContentScript({
         };
 
         const rect = imgElement.getBoundingClientRect();
-        const scaleX = rect.width / (imgElement.naturalWidth || 1);
-        const scaleY = rect.height / (imgElement.naturalHeight || 1);
+        const naturalW = "naturalWidth" in imgElement ? imgElement.naturalWidth : imgElement.width;
+        const naturalH = "naturalHeight" in imgElement ? imgElement.naturalHeight : imgElement.height;
+        const scaleX = rect.width / (naturalW || 1);
+        const scaleY = rect.height / (naturalH || 1);
 
         const wrapper = document.createElement("div");
         wrapper.style.cssText = `position:relative;display:inline-block;width:${rect.width}px;height:${rect.height}px;`;
@@ -229,6 +327,7 @@ export default defineContentScript({
                 scaleX,
                 scaleY,
                 originalSrc,
+                rawImageUrl: src,
 
                 getTranslationCache: async () => {
                   const cache = await storage.getItem<PageCache>(
@@ -776,11 +875,11 @@ export default defineContentScript({
         mount(FloatingTrigger, {
           target: uiContainer,
           props: {
-            onTranslate: (img: HTMLImageElement) => {
+            onTranslate: (img: MangaTargetElement) => {
               autoTranslator.enqueueManual(img);
             },
-            getOverlayMode: (img: HTMLImageElement) => {
-              const key = srcKey(img.src);
+            getOverlayMode: (img: MangaTargetElement) => {
+              const key = srcKey(getElementSrc(img));
               const originalSrc = translatedSrcMap.get(key) ?? key;
               const overlay = overlays.get(originalSrc);
               if (!overlay) return "idle";
@@ -789,8 +888,8 @@ export default defineContentScript({
               if (mode === "loading") return "translating";
               return "idle";
             },
-            getOverlayProgress: (img: HTMLImageElement) => {
-              const key = srcKey(img.src);
+            getOverlayProgress: (img: MangaTargetElement) => {
+              const key = srcKey(getElementSrc(img));
               const originalSrc = translatedSrcMap.get(key) ?? key;
               const overlay = overlays.get(originalSrc);
               return (
@@ -798,10 +897,10 @@ export default defineContentScript({
                 "Translating…"
               );
             },
-            isSameSource: (img: HTMLImageElement, src: string) => {
-              const key = srcKey(img.src);
+            isSameSource: (img: MangaTargetElement, src: string) => {
+              const key = srcKey(getElementSrc(img));
               const originalSrc = translatedSrcMap.get(key) ?? key;
-              return originalSrc === src || img.src === src;
+              return originalSrc === src || getElementSrc(img) === src;
             },
           },
         }),

@@ -20,6 +20,7 @@
     scaleX: number;
     scaleY: number;
     originalSrc: string;
+    rawImageUrl?: string;
     wrapper: HTMLElement;
     getTranslationCache: () => Promise<
       | {
@@ -66,6 +67,7 @@
     scaleX,
     scaleY,
     originalSrc,
+    rawImageUrl,
     wrapper,
     getTranslationCache,
     requestBubbleDetection,
@@ -77,6 +79,8 @@
     getCleanedSrc,
     applyInpaintPatches,
   }: Props = $props();
+
+  const rawDisplaySrc = $derived(rawImageUrl || originalSrc);
 
   let toolbarPosition = $state({ x: 0, y: 12 }); // center-top initial, viewport-relative
   let toolbarDragStart = $state<{ startX: number; startY: number; initialX: number; initialY: number } | null>(null);
@@ -391,7 +395,7 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
         .filter((p) => p.type === "restore-raw")
         .map((p) => ({ x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2, confidence: 1 }));
       try {
-        cleanedUrl = await applyInpaintPatches(cleanedUrl || originalSrc, added, removed);
+        cleanedUrl = await applyInpaintPatches(cleanedUrl || rawDisplaySrc, added, removed);
         inpaintPatches = [];
       } catch (err) {
         showError("Failed to apply inpaint patches: " + (err as Error).message);
@@ -467,17 +471,17 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
     let layerType = "result";
     if (mode === "editing") {
       if (activeEditorLayer === "raw") {
-        targetUrl = originalSrc;
+        targetUrl = rawDisplaySrc;
         layerType = "raw";
       } else if (activeEditorLayer === "cleaned") {
-        targetUrl = cleanedUrl || originalSrc;
+        targetUrl = cleanedUrl || rawDisplaySrc;
         layerType = "cleaned";
       } else {
         targetUrl = translatedUrl;
         layerType = "result";
       }
     } else if (showOriginal) {
-      targetUrl = originalSrc;
+      targetUrl = rawDisplaySrc;
       layerType = "raw";
     }
 
@@ -942,10 +946,35 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
     };
   });
 
+  let isWrapperHovered = $state(false);
+
+  $effect(() => {
+    if (!wrapper) return;
+    const onEnter = () => {
+      isWrapperHovered = true;
+    };
+    const onLeave = () => {
+      isWrapperHovered = false;
+    };
+    wrapper.addEventListener("mouseenter", onEnter);
+    wrapper.addEventListener("mouseleave", onLeave);
+    return () => {
+      wrapper.removeEventListener("mouseenter", onEnter);
+      wrapper.removeEventListener("mouseleave", onLeave);
+    };
+  });
+
   $effect(() => {
     if (wrapper) {
       wrapper.setAttribute("data-lmt-mode", mode);
       wrapper.setAttribute("data-lmt-progress", loadingMsg);
+      const isInteractive = mode === "refining" || mode === "editing";
+      const zVal = isInteractive ? (isWrapperHovered ? "60" : "50") : "";
+      wrapper.style.zIndex = zVal;
+      const parent = wrapper.parentElement;
+      if (parent && parent.classList.contains("page-area")) {
+        parent.style.zIndex = zVal;
+      }
       wrapper.dispatchEvent(
         new CustomEvent("lmt:mode-change", { detail: { mode }, bubbles: true }),
       );
@@ -1052,7 +1081,7 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
 
   {#if mode === "results"}
     <img
-      src={showOriginal ? originalSrc : translatedUrl}
+      src={showOriginal ? rawDisplaySrc : translatedUrl}
       alt={showOriginal ? "Original Img" : "Translated Img"}
       class="w-full h-full object-contain select-none pointer-events-none"
     />
@@ -1128,7 +1157,7 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
   {#if mode === "editing"}
     <!-- Layer image rendering based on activeEditorLayer -->
     <img
-      src={activeEditorLayer === "raw" ? originalSrc : (cleanedUrl || translatedUrl)}
+      src={activeEditorLayer === "raw" ? rawDisplaySrc : (cleanedUrl || translatedUrl)}
       alt="Manga Scan Layer"
       class="w-full h-full object-contain select-none pointer-events-none"
     />
