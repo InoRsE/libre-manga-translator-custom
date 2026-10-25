@@ -9,6 +9,7 @@
     Redo,
     X,
     GripVertical,
+    GripHorizontal,
     PilcrowLeft,
     PilcrowRight,
     BoxSelect,
@@ -70,6 +71,58 @@
     onExportJpg,
     onToggleOriginal,
   }: Props = $props();
+
+  function getInitialResultsOffset(): { x: number; y: number } {
+    try {
+      const saved = localStorage.getItem("lmt-results-offset");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed?.x === "number" && typeof parsed?.y === "number") {
+          return { x: parsed.x, y: parsed.y };
+        }
+      }
+    } catch {}
+    return { x: 0, y: 0 };
+  }
+
+  let resultsOffset = $state(getInitialResultsOffset());
+  let isDraggingResults = $state(false);
+  let resultsDragStart: { mouseX: number; mouseY: number; initialX: number; initialY: number } | null = null;
+
+  function handleResultsDragStart(e: MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    isDraggingResults = true;
+    resultsDragStart = {
+      mouseX: e.clientX,
+      mouseY: e.clientY,
+      initialX: resultsOffset.x,
+      initialY: resultsOffset.y,
+    };
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!resultsDragStart) return;
+      const dx = moveEvent.clientX - resultsDragStart.mouseX;
+      const dy = moveEvent.clientY - resultsDragStart.mouseY;
+      resultsOffset = {
+        x: resultsDragStart.initialX + dx,
+        y: resultsDragStart.initialY + dy,
+      };
+    };
+
+    const handleMouseUp = () => {
+      isDraggingResults = false;
+      resultsDragStart = null;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      try {
+        localStorage.setItem("lmt-results-offset", JSON.stringify(resultsOffset));
+      } catch {}
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  }
 
   function trapClick(fn?: () => void) {
     return (e: MouseEvent) => {
@@ -245,7 +298,8 @@
 {:else if mode === "results"}
   <!-- Floating Action Cluster on Results -->
   <div
-    class="absolute left-2.5 bottom-2.5 flex flex-col gap-1 z-50 select-none pointer-events-auto"
+    class="absolute left-2.5 bottom-2.5 flex flex-col gap-1 z-50 select-none pointer-events-auto {isDraggingResults ? 'transition-none cursor-grabbing' : 'transition-transform duration-150'}"
+    style="transform: translate({resultsOffset.x}px, {resultsOffset.y}px);"
     onclick={(e) => {
       e.stopPropagation();
       e.preventDefault();
@@ -256,6 +310,17 @@
     role="presentation"
   >
     <div class="flex flex-col gap-1 p-1 rounded-[6px] border border-[var(--border-line)] bg-[var(--surface-panel)] backdrop-blur-md shadow-[0_8px_30px_rgba(0,0,0,0.3),0_0_12px_var(--text-dim)]">
+      <!-- Drag Handle -->
+      <button
+        type="button"
+        onmousedown={handleResultsDragStart}
+        title="Drag to move toolbar (可自由拖拽移动)"
+        aria-label="Drag results toolbar"
+        class="w-8 h-4 inline-flex items-center justify-center rounded-[3px] text-[var(--text-dim)] hover:text-[var(--accent-cyan)] cursor-grab active:cursor-grabbing transition-colors"
+      >
+        <GripHorizontal size={14} />
+      </button>
+
       <!-- Refine Boxes -->
       <button
         type="button"
