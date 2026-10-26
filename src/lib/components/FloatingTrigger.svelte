@@ -3,17 +3,25 @@
   import { Sparkles, LoaderCircle, GripVertical } from "lucide-svelte";
   import { isPending as isRegistryPending } from "@/entrypoints/content/translation-registry";
   import { getElementSrc, type MangaTargetElement } from "@/lib/canvas";
+  import type { PillPosition } from "@/lib/adapters";
 
   let {
     onTranslate,
     getOverlayMode,
     getOverlayProgress,
     isSameSource,
+    readerContainerSelector = null,
+    pillPosition,
   }: {
     onTranslate?: (img: MangaTargetElement) => void;
     getOverlayMode?: (img: MangaTargetElement) => "idle" | "translating" | "translated";
     getOverlayProgress?: (img: MangaTargetElement) => string;
     isSameSource?: (img: MangaTargetElement, src: string) => boolean;
+    // Site-rule reader container (when the active rule declares one) —
+    // candidates inside it are treated as pages at a lower size bar.
+    readerContainerSelector?: string | null;
+    // Where to anchor the pill on each image (site-rule override)
+    pillPosition?: PillPosition;
   } = $props();
 
   let x = $state(0);
@@ -51,14 +59,33 @@
       hideTimer = null;
     }
   }
+  function isInViewport(el: Element) {
+    const r = el.getBoundingClientRect();
+    return (
+      r.bottom > 4 &&
+      r.top < window.innerHeight - 4 &&
+      r.right > 4 &&
+      r.left < window.innerWidth - 4
+    );
+  }
+
   function scheduleHide() {
     cancelHide();
     if (status === "translating") return;
     hideTimer = setTimeout(() => {
-      if (status !== "translating") {
-        visible = false;
-        targetImg = null;
+      // Keep a translating pill pinned only while its image is attached and
+      // actually on screen; scrolling it away must not leave the pill
+      // stranded over the rest of the reader UI.
+      if (
+        status === "translating" &&
+        targetImg &&
+        document.body.contains(targetImg) &&
+        isInViewport(targetImg)
+      ) {
+        return;
       }
+      visible = false;
+      targetImg = null;
     }, 250);
   }
 
@@ -71,6 +98,47 @@
       (renderedW >= 260 && renderedH >= 260) ||
       (naturalW >= 260 && naturalH >= 260)
     );
+  }
+
+  // Custom-element hosts owned by this extension. Hovers landing inside our
+  // own UI must never re-map or schedule hides from the document listener.
+  const OWN_UI_SELECTOR =
+    "lmt-root, lmt-overlay, lmt-sidebar, lmt-floating-trigger";
+
+  const INTERACTIVE_SELECTOR =
+    "a[href], button, [role='button'], [role='link'], summary, nav, header";
+
+  // Indirect hover mapping (descendant / beneath-cursor matching) must only
+  // resolve to page-like targets. Navigation chrome — episode cards, banners,
+  // thumbnails inside links — clears a raw pixel threshold easily via natural
+  // size, so require real on-screen page mass, and reject anything contained
+  // in interactive elements.
+  function isPageLike(el: MangaTargetElement) {
+    const w = el.offsetWidth || el.clientWidth;
+    const h = el.offsetHeight || el.clientHeight;
+    // Thumbnails and icons: never indirect-map to images narrower than 350px,
+    // regardless of occupancy (covers 280-320px range often seen in nav cards).
+    if (w < 350 || h < 280) return false;
+    if (el.closest(INTERACTIVE_SELECTOR)) return false;
+    if (readerContainerSelector) {
+      try {
+        if (el.closest(readerContainerSelector)) return w >= 180 && h >= 180;
+      } catch {
+        // invalid selector from a custom rule — fall through to geometry
+      }
+    }
+    const vpArea = (window.innerWidth || 1) * (window.innerHeight || 1);
+    return (w * h) / vpArea >= 0.12;
+  }
+
+  // For the descendant path: the matched image must fill most of the hovered
+  // element. Cards place a thumbnail beside text; real tap-overlay wrappers
+  // contain (almost) nothing but the page itself.
+  function fillsWrapper(child: Element, hovered: HTMLElement) {
+    const c = child.getBoundingClientRect();
+    const p = hovered.getBoundingClientRect();
+    if (p.width <= 0 || p.height <= 0) return true;
+    return (c.width * c.height) / (p.width * p.height) >= 0.6;
   }
 
   function srcMatches(el: MangaTargetElement, src: string) {
@@ -137,6 +205,11 @@
     cancelHide();
     targetImg = img;
     if (auto) autoImg = img;
+    // Clear manual drag offset when the pill switches to a different image
+    // (hovering/auto-queue) — pill should snap to the new image's position.
+    // Dragging the pill itself sets isDraggingTrigger=true, so this won't
+    // interfere with active drags.
+    if (!isDraggingTrigger) dragOffset = null;
     updatePosition();
     visible = true;
     if (adoptMode(img) === "translated") {
@@ -216,13 +289,52 @@
       const rect = targetImg.getBoundingClientRect();
       const buttonHeight = 36;
       const margin = 16;
-      // Position at bottom-left of the manga element or viewport
-      const maxBottom = Math.min(rect.bottom, window.innerHeight);
-      const targetY = maxBottom - buttonHeight - margin;
+      const pos = pillPosition ?? "top-left";
 
-      x = Math.max(16, rect.left + margin);
-      // Keep at least 80px below viewport top to prevent triggering site top headers/banners
-      y = Math.max(80, targetY);
+      switch (pos) {
+        case "top-left":
+          x = Math.max(16, rect.left + margin);
+          y = Math.max(20, rect.top + margin);
+          break;
+        case "top":
+          x = Math.max(16, rect.left + rect.width / 2 - 60);
+          y = Math.max(20, rect.top + margin);
+          break;
+        case "top-right":
+          x = Math.max(16, Math.min(window.innerWidth - 140, rect.right - 140));
+          y = Math.max(20, rect.top + margin);
+          break;
+        case "left":
+          x = Math.max(16, rect.left + margin);
+          y = Math.max(20, rect.top + rect.height / 2 - buttonHeight / 2);
+          break;
+        case "right":
+          x = Math.max(16, Math.min(window.innerWidth - 140, rect.right - 140));
+          y = Math.max(20, rect.top + rect.height / 2 - buttonHeight / 2);
+          break;
+        case "bottom":
+          x = Math.max(16, rect.left + rect.width / 2 - 60);
+          y = Math.max(
+            20,
+            Math.min(rect.bottom - buttonHeight - margin, window.innerHeight - buttonHeight - margin)
+          );
+          break;
+        case "bottom-right":
+          x = Math.max(16, Math.min(window.innerWidth - 140, rect.right - 140));
+          y = Math.max(
+            20,
+            Math.min(rect.bottom - buttonHeight - margin, window.innerHeight - buttonHeight - margin)
+          );
+          break;
+        case "bottom-left":
+        default:
+          x = Math.max(16, rect.left + margin);
+          y = Math.max(
+            20,
+            Math.min(rect.bottom - buttonHeight - margin, window.innerHeight - buttonHeight - margin)
+          );
+          break;
+      }
     }
   }
 
@@ -235,16 +347,30 @@
       const target = e.target;
       let el: MangaTargetElement | null = null;
       if (isMangaElement(target) && meetsThreshold(target)) {
+        // Direct hover on a page image — always honored, no page-like gate
+        // (small zoomed-out pages and linked reader images must still work).
         el = target;
-      } else if (target instanceof HTMLElement) {
-        const child = target.querySelector<MangaTargetElement>("canvas, img");
-        if (child && meetsThreshold(child)) {
-          el = child;
-        } else {
+      } else if (
+        target instanceof HTMLElement &&
+        !target.closest(OWN_UI_SELECTOR)
+      ) {
+        for (const child of target.querySelectorAll<MangaTargetElement>(
+          "canvas, img",
+        )) {
+          if (
+            meetsThreshold(child) &&
+            isPageLike(child) &&
+            fillsWrapper(child, target)
+          ) {
+            el = child;
+            break;
+          }
+        }
+        if (!el) {
           // Transparent tap overlays: inspect underlying elements
           const hits = document.elementsFromPoint(e.clientX, e.clientY);
           for (const hit of hits) {
-            if (isMangaElement(hit) && meetsThreshold(hit)) {
+            if (isMangaElement(hit) && meetsThreshold(hit) && isPageLike(hit)) {
               el = hit;
               break;
             }
@@ -252,12 +378,28 @@
         }
       }
 
-      if (!el || !document.body.contains(el)) return;
+      if (!el || !document.body.contains(el)) {
+        // Un-mappable hover (nav cards, text, chrome). A pill established via
+        // descendant/underlying mapping never gets a mouseout from the mapped
+        // image itself, so schedule the hide here instead of stranding it.
+        if (
+          targetImg &&
+          targetImg !== autoImg &&
+          hoverImg &&
+          !(target instanceof Element && target.closest(OWN_UI_SELECTOR))
+        ) {
+          hoverImg = null;
+          scheduleHide();
+        }
+        return;
+      }
       hoverImg = el;
       cancelHide();
       if (targetImg !== el) {
         showFor(el, false);
       } else {
+        // Hovering the retained target after a scroll-hide: bring it back.
+        visible = true;
         adoptMode(el);
       }
     }
@@ -276,8 +418,28 @@
       scheduleHide();
     }
 
+    // Browsers don't reliably fire mouseout when a scrolled element slides
+    // out from under a stationary cursor, so scroll/resize manages pill
+    // visibility directly. Off-screen images hide the pill (keeping
+    // targetImg/autoImg and the translating pin so scrolling back restores
+    // it); in-view images only re-show it when the pill is still owned —
+    // hovered or pipeline-pinned — never for stale indirect mappings.
     function handleScroll() {
-      updatePosition();
+      if (!targetImg) return;
+      if (!document.body.contains(targetImg)) {
+        visible = false;
+        targetImg = null;
+        return;
+      }
+      if (isInViewport(targetImg)) {
+        if (hoverImg === targetImg || autoImg === targetImg) {
+          visible = true;
+          updatePosition();
+        }
+      } else {
+        visible = false;
+        if (targetImg !== autoImg && hoverImg !== targetImg) targetImg = null;
+      }
     }
 
     function handleModeChange(e: Event) {
@@ -332,15 +494,21 @@
       // "translating" set on click (the flash). The registry-pending guard
       // inside settleTarget covers the pre-mount gap.
       if (targetImg && srcMatches(targetImg, detail.src)) settleTarget();
-      if (autoImg && autoImg !== targetImg && srcMatches(autoImg, detail.src)) {
+      // Clear the pin for our own image too: `handleMouseOut` refuses to hide
+      // while `targetImg === autoImg`, so a never-cleared pin here left the
+      // pill stuck in Translate state after a finished translation.
+      if (autoImg && srcMatches(autoImg, detail.src)) {
         autoImg = null;
       }
     }
 
     document.addEventListener("mouseover", handleMouseOver, { passive: true });
     document.addEventListener("mouseout", handleMouseOut, { passive: true });
-    window.addEventListener("scroll", handleScroll, { passive: true });
     window.addEventListener("resize", handleScroll, { passive: true });
+    // Capture on document: `scroll` does not bubble, and many readers (Sunday
+    // Webry included) scroll an inner container — window-only listeners never
+    // fired for those, so the pill stayed pinned off-screen.
+    document.addEventListener("scroll", handleScroll, { passive: true, capture: true });
     document.addEventListener("lmt:mode-change", handleModeChange, { passive: true });
     document.addEventListener("lmt:progress", handleProgress, { passive: true });
     document.addEventListener("lmt:translation-status", handleTranslationStatus, { passive: true });
@@ -348,8 +516,8 @@
     return () => {
       document.removeEventListener("mouseover", handleMouseOver);
       document.removeEventListener("mouseout", handleMouseOut);
-      window.removeEventListener("scroll", handleScroll);
       window.removeEventListener("resize", handleScroll);
+      document.removeEventListener("scroll", handleScroll, true);
       document.removeEventListener("lmt:mode-change", handleModeChange);
       document.removeEventListener("lmt:progress", handleProgress);
       document.removeEventListener("lmt:translation-status", handleTranslationStatus);

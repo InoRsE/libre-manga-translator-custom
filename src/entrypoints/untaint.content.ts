@@ -46,11 +46,7 @@ export default defineContentScript({
           enumerable: desc.enumerable,
           get: desc.get,
           set(val: string) {
-            // Only apply to detached JS-created images (used for canvas drawing)
-            // or images inside known manga viewer containers.
-            if (!this.isConnected) {
-              applyCorsWithFallback(this, String(val));
-            }
+            applyCorsWithFallback(this, String(val));
             desc.set!.call(this, val);
           },
         });

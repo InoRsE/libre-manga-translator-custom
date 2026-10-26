@@ -5,7 +5,7 @@ import { AutoTranslateOrchestrator } from "./auto-translate";
 import * as Registry from "./translation-registry";
 import { mount, unmount } from "svelte";
 import { ShadowRootContentScriptUi } from "#imports";
-import { getSiteRule } from "@/lib/adapters";
+import { getSiteRule, resolveActiveSiteRule } from "@/lib/adapters";
 import { DefaultConfig, normalizeDetectionModel, resolveLangGroup } from "@/lib/configs";
 import { logDebugEntry, updateDebugEntry } from "./debug";
 import {
@@ -866,6 +866,10 @@ export default defineContentScript({
     ctx.onInvalidated(() => autoTranslator.destroy());
 
     // ── Floating Hover Trigger ──────────────────────────────────────────
+    // Indirect hover mapping (descendant / beneath-cursor) is gated on the
+    // active rule's reader container so episode cards and nav chrome on list
+    // pages never summon the pill.
+    const pillRule = await resolveActiveSiteRule();
     createShadowRootUi(ctx, {
       name: "lmt-floating-trigger",
       position: "inline",
@@ -879,8 +883,8 @@ export default defineContentScript({
               autoTranslator.enqueueManual(img);
             },
             getOverlayMode: (img: MangaTargetElement) => {
-              const key = srcKey(getElementSrc(img));
-              const originalSrc = translatedSrcMap.get(key) ?? key;
+              const raw = getElementSrc(img);
+              const originalSrc = translatedSrcMap.get(srcKey(raw)) ?? raw;
               const overlay = overlays.get(originalSrc);
               if (!overlay) return "idle";
               const mode = overlay.wrapper.getAttribute("data-lmt-mode");
@@ -889,8 +893,8 @@ export default defineContentScript({
               return "idle";
             },
             getOverlayProgress: (img: MangaTargetElement) => {
-              const key = srcKey(getElementSrc(img));
-              const originalSrc = translatedSrcMap.get(key) ?? key;
+              const raw = getElementSrc(img);
+              const originalSrc = translatedSrcMap.get(srcKey(raw)) ?? raw;
               const overlay = overlays.get(originalSrc);
               return (
                 overlay?.wrapper.getAttribute("data-lmt-progress") ??
@@ -898,10 +902,12 @@ export default defineContentScript({
               );
             },
             isSameSource: (img: MangaTargetElement, src: string) => {
-              const key = srcKey(getElementSrc(img));
-              const originalSrc = translatedSrcMap.get(key) ?? key;
-              return originalSrc === src || getElementSrc(img) === src;
+              const raw = getElementSrc(img);
+              const originalSrc = translatedSrcMap.get(srcKey(raw)) ?? raw;
+              return originalSrc === src || raw === src;
             },
+            readerContainerSelector: pillRule.containerSelector ?? null,
+            pillPosition: pillRule.pillPosition,
           },
         }),
       onRemove: (app) => {

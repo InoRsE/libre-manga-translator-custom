@@ -108,11 +108,11 @@ export class AutoTranslateQueue {
       }
       // Strict registry guard at drain time as well (covers race between enqueue and drain)
       const k = Registry.srcKeyOf(src);
-      if (
-        Registry.isPending(k) ||
-        this.inFlight.has(k) ||
-        Registry.getStatus(k) === "done"
-      ) {
+      if (Registry.isPending(k) || this.inFlight.has(k)) {
+        continue;
+      }
+      if (Registry.getStatus(k) === "done") {
+        this.seenKeys.delete(k);
         continue;
       }
 

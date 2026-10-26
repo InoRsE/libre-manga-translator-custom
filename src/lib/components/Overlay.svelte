@@ -1000,7 +1000,7 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
       const zVal = isInteractive ? (isWrapperHovered ? "60" : "50") : "";
       wrapper.style.zIndex = zVal;
       const parent = wrapper.parentElement;
-      if (parent && parent.classList.contains("page-area")) {
+      if (parent) {
         parent.style.zIndex = zVal;
       }
       wrapper.dispatchEvent(
