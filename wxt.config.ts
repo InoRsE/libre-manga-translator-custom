@@ -7,6 +7,7 @@ export default defineConfig({
   vite: () => ({
     plugins: [tailwindcss() as any],
     build: {
+      target: "esnext",
       minify: import.meta.env.PROD ? "terser" : "esbuild",
     },
   }),

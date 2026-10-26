@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Sparkles, LoaderCircle } from "lucide-svelte";
+  import { Sparkles, LoaderCircle, GripVertical } from "lucide-svelte";
   import { isPending as isRegistryPending } from "@/entrypoints/content/translation-registry";
+  import { getElementSrc, type MangaTargetElement } from "@/lib/canvas";
 
   let {
     onTranslate,
@@ -9,10 +10,10 @@
     getOverlayProgress,
     isSameSource,
   }: {
-    onTranslate?: (img: HTMLImageElement) => void;
-    getOverlayMode?: (img: HTMLImageElement) => "idle" | "translating" | "translated";
-    getOverlayProgress?: (img: HTMLImageElement) => string;
-    isSameSource?: (img: HTMLImageElement, src: string) => boolean;
+    onTranslate?: (img: MangaTargetElement) => void;
+    getOverlayMode?: (img: MangaTargetElement) => "idle" | "translating" | "translated";
+    getOverlayProgress?: (img: MangaTargetElement) => string;
+    isSameSource?: (img: MangaTargetElement, src: string) => boolean;
   } = $props();
 
   let x = $state(0);
@@ -20,11 +21,28 @@
   let visible = $state(false);
   let status = $state<"idle" | "translating" | "translated">("idle");
   let progressText = $state("Detecting text…");
-  let targetImg = $state<HTMLImageElement | null>(null);
+  let targetImg = $state<MangaTargetElement | null>(null);
   // Pipeline-active image shown without hover (manual click optimistic or
   // auto-queue). Hover takes over while hovering; pointer-leave snaps back.
-  let autoImg = $state<HTMLImageElement | null>(null);
-  let hoverImg = $state<HTMLImageElement | null>(null);
+  let autoImg = $state<MangaTargetElement | null>(null);
+  let hoverImg = $state<MangaTargetElement | null>(null);
+
+  let dragOffset = $state<{ x: number; y: number } | null>(null);
+  let isDraggingTrigger = $state(false);
+  let triggerDragStart: { mouseX: number; mouseY: number; initialX: number; initialY: number } | null = null;
+
+  try {
+    const saved = localStorage.getItem("lmt-trigger-pos");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (typeof parsed?.x === "number" && typeof parsed?.y === "number") {
+        dragOffset = {
+          x: Math.max(8, Math.min(window.innerWidth - 120, parsed.x)),
+          y: Math.max(8, Math.min(window.innerHeight - 48, parsed.y)),
+        };
+      }
+    }
+  } catch {}
 
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   function cancelHide() {
@@ -44,20 +62,22 @@
     }, 250);
   }
 
-  function meetsThreshold(img: HTMLImageElement) {
-    const renderedW = img.offsetWidth || img.clientWidth;
-    const renderedH = img.offsetHeight || img.clientHeight;
+  function meetsThreshold(el: MangaTargetElement) {
+    const renderedW = el.offsetWidth || el.clientWidth;
+    const renderedH = el.offsetHeight || el.clientHeight;
+    const naturalW = "naturalWidth" in el ? el.naturalWidth : el.width;
+    const naturalH = "naturalHeight" in el ? el.naturalHeight : el.height;
     return (
       (renderedW >= 260 && renderedH >= 260) ||
-      (img.naturalWidth >= 260 && img.naturalHeight >= 260)
+      (naturalW >= 260 && naturalH >= 260)
     );
   }
 
-  function srcMatches(img: HTMLImageElement, src: string) {
-    return isSameSource?.(img, src) ?? img.src === src;
+  function srcMatches(el: MangaTargetElement, src: string) {
+    return isSameSource?.(el, src) ?? getElementSrc(el) === src;
   }
 
-  function queryMode(img: HTMLImageElement) {
+  function queryMode(img: MangaTargetElement) {
     return getOverlayMode?.(img) ?? "idle";
   }
 
@@ -65,24 +85,59 @@
   // "translating" while the registry still holds the image pending — the
   // overlay mounts ~1s after click, and re-querying that gap used to flash
   // the pill back to Translate (then hide on pointer-out).
-  function adoptMode(img: HTMLImageElement) {
+  function adoptMode(img: MangaTargetElement) {
     const q = queryMode(img);
+    const src = getElementSrc(img);
     if (q === "translating") {
       status = q;
       progressText = getOverlayProgress?.(img) ?? "Translating…";
-    } else if (status !== "translating" || !isRegistryPending(img.src)) {
+    } else if (status !== "translating" || !src || !isRegistryPending(src)) {
       status = q;
     }
     return q;
   }
 
-  function showFor(img: HTMLImageElement, auto: boolean) {
+  function handleDragStart(e: MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    isDraggingTrigger = true;
+    triggerDragStart = {
+      mouseX: e.clientX,
+      mouseY: e.clientY,
+      initialX: x,
+      initialY: y,
+    };
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!triggerDragStart) return;
+      const dx = moveEvent.clientX - triggerDragStart.mouseX;
+      const dy = moveEvent.clientY - triggerDragStart.mouseY;
+      x = Math.max(8, Math.min(window.innerWidth - 140, triggerDragStart.initialX + dx));
+      y = Math.max(8, Math.min(window.innerHeight - 48, triggerDragStart.initialY + dy));
+      dragOffset = { x, y };
+    };
+
+    const handleMouseUp = () => {
+      isDraggingTrigger = false;
+      triggerDragStart = null;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      if (dragOffset) {
+        try {
+          localStorage.setItem("lmt-trigger-pos", JSON.stringify(dragOffset));
+        } catch {}
+      }
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  }
+
+  function showFor(img: MangaTargetElement, auto: boolean) {
     cancelHide();
-    const rect = img.getBoundingClientRect();
     targetImg = img;
     if (auto) autoImg = img;
-    x = rect.left + 8;
-    y = rect.top + 8;
+    updatePosition();
     visible = true;
     if (adoptMode(img) === "translated") {
       if (auto) autoImg = null;
@@ -108,11 +163,11 @@
     }
   }
 
-  function findImgForSrc(src: string): HTMLImageElement | null {
-    const imgs = document.querySelectorAll("img");
+  function findImgForSrc(src: string): MangaTargetElement | null {
+    const imgs = document.querySelectorAll<MangaTargetElement>("img, canvas");
     for (const img of imgs) {
       if (
-        img instanceof HTMLImageElement &&
+        (img instanceof HTMLImageElement || img instanceof HTMLCanvasElement) &&
         document.body.contains(img) &&
         meetsThreshold(img) &&
         srcMatches(img, src)
@@ -123,11 +178,12 @@
     return null;
   }
 
-  function isActive(img: HTMLImageElement) {
+  function isActive(img: MangaTargetElement) {
     if (!document.body.contains(img)) return false;
     if (queryMode(img) === "translating") return true;
     try {
-      return isRegistryPending(img.src);
+      const src = getElementSrc(img);
+      return src ? isRegistryPending(src) : false;
     } catch {
       return false;
     }
@@ -138,43 +194,76 @@
     if (!(target instanceof HTMLElement) || typeof target.querySelector !== "function") {
       return null;
     }
-    const img = target.querySelector("img");
+    const el = target.querySelector<MangaTargetElement>("img, canvas");
     if (
-      !(img instanceof HTMLImageElement) ||
-      !document.body.contains(img) ||
-      !meetsThreshold(img)
+      !el ||
+      !(el instanceof HTMLImageElement || el instanceof HTMLCanvasElement) ||
+      !document.body.contains(el) ||
+      !meetsThreshold(el)
     ) {
       return null;
     }
-    return img;
+    return el;
   }
 
   function updatePosition() {
     if (visible && targetImg && document.body.contains(targetImg)) {
+      if (dragOffset) {
+        x = dragOffset.x;
+        y = dragOffset.y;
+        return;
+      }
       const rect = targetImg.getBoundingClientRect();
-      x = rect.left + 8;
-      y = rect.top + 8;
+      const buttonHeight = 36;
+      const margin = 16;
+      // Position at bottom-left of the manga element or viewport
+      const maxBottom = Math.min(rect.bottom, window.innerHeight);
+      const targetY = maxBottom - buttonHeight - margin;
+
+      x = Math.max(16, rect.left + margin);
+      // Keep at least 80px below viewport top to prevent triggering site top headers/banners
+      y = Math.max(80, targetY);
     }
+  }
+
+  function isMangaElement(el: unknown): el is MangaTargetElement {
+    return el instanceof HTMLImageElement || el instanceof HTMLCanvasElement;
   }
 
   onMount(() => {
     function handleMouseOver(e: MouseEvent) {
       const target = e.target;
-      if (!(target instanceof HTMLImageElement)) return;
-      if (!document.body.contains(target)) return;
+      let el: MangaTargetElement | null = null;
+      if (isMangaElement(target) && meetsThreshold(target)) {
+        el = target;
+      } else if (target instanceof HTMLElement) {
+        const child = target.querySelector<MangaTargetElement>("canvas, img");
+        if (child && meetsThreshold(child)) {
+          el = child;
+        } else {
+          // Transparent tap overlays: inspect underlying elements
+          const hits = document.elementsFromPoint(e.clientX, e.clientY);
+          for (const hit of hits) {
+            if (isMangaElement(hit) && meetsThreshold(hit)) {
+              el = hit;
+              break;
+            }
+          }
+        }
+      }
 
-      if (!meetsThreshold(target)) return;
-      hoverImg = target;
+      if (!el || !document.body.contains(el)) return;
+      hoverImg = el;
       cancelHide();
-      if (targetImg !== target) {
-        showFor(target, false);
+      if (targetImg !== el) {
+        showFor(el, false);
       } else {
-        adoptMode(target);
+        adoptMode(el);
       }
     }
 
     function handleMouseOut(e: MouseEvent) {
-      if (!(e.target instanceof HTMLImageElement)) return;
+      if (!isMangaElement(e.target)) return;
       if (e.target === hoverImg) hoverImg = null;
       if (e.target !== targetImg) return;
       // Pinned pipeline image stays visible without hover.
@@ -287,7 +376,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     role="presentation"
-    class="lmt-floating-root fixed z-[999999] pointer-events-auto select-none transition-opacity duration-200"
+    class="lmt-floating-root fixed z-[999999] pointer-events-auto select-none transition-opacity duration-200 {isDraggingTrigger ? 'cursor-grabbing' : ''}"
     style="top: {Math.max(8, y)}px; left: {Math.max(8, x)}px;"
     onmouseenter={cancelHide}
     onmouseleave={scheduleHide}
@@ -298,12 +387,23 @@
       e.preventDefault();
     }}
   >
-    <div class="flex items-center rounded-lg">
+    <div class="flex items-center rounded-lg bg-[var(--surface-panel)] border border-[var(--border-line)] shadow-lg overflow-hidden">
+      <!-- Drag Handle -->
+      <button
+        type="button"
+        onmousedown={handleDragStart}
+        class="pl-1.5 pr-0.5 py-1 text-[var(--text-muted)] hover:text-[var(--accent-cyan)] cursor-grab active:cursor-grabbing flex items-center transition-colors border-r border-[var(--border-line)]/50"
+        title="Drag to move button (可拖拽自由移动)"
+        aria-label="Drag to move"
+      >
+        <GripVertical size={13} />
+      </button>
+
       <!-- Main Trigger Button -->
       <button
         type="button"
         onclick={handleTriggerClick}
-        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold tracking-wide transition-all cursor-pointer border {status === 'translating' ? 'bg-[var(--surface-panel)] text-[var(--accent-cyan)] border-[var(--accent-cyan-glow)] cursor-wait' : 'bg-[var(--surface-panel)] text-[var(--text-primary)] border-[var(--border-line)] hover:border-[var(--accent-amber)] hover:text-[var(--accent-amber)] hover:shadow-[0_0_12px_var(--accent-amber-glow)]'}"
+        class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold tracking-wide transition-all cursor-pointer {status === 'translating' ? 'text-[var(--accent-cyan)] cursor-wait' : 'text-[var(--text-primary)] hover:text-[var(--accent-amber)] hover:shadow-[0_0_12px_var(--accent-amber-glow)]'}"
         title={status === 'translating' ? progressText : 'Translate manga image'}
       >
         {#if status === "translating"}
