@@ -393,6 +393,32 @@ export default defineBackground(() => {
       return true;
     }
 
+    // Chrome notification trigger with safe fallback
+    if (msg.type === "SHOW_NOTIFICATION") {
+      const { title, message } = msg.data ?? {};
+      try {
+        const notif = (browser as any).notifications;
+        if (notif?.create) {
+          notif.create({
+            type: "basic",
+            iconUrl: browser.runtime.getURL("/icon/128.png"),
+            title: title || "Libre Manga Translator",
+            message: message || "Chapter ready!",
+          });
+        }
+      } catch (e) {
+        console.warn("LMT: Failed to create Chrome notification:", e);
+      }
+      respond({ success: true });
+      return true;
+    }
+
+    // Service worker keep-alive heartbeat while background chapter preparation runs
+    if (msg.type === "CHAPTER_PREP_HEARTBEAT") {
+      respond({ alive: true, timestamp: Date.now() });
+      return true;
+    }
+
     // Proxy image fetch for cross-origin or hotlink-protected images (Cloudflare, Referer checks).
     // Uses declarativeNetRequest to inject the proper Referer so CDNs accept the request,
     // then converts to base64 data URL to completely bypass CORS/network downstream.

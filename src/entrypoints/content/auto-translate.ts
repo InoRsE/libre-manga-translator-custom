@@ -206,6 +206,14 @@ export class AutoTranslateOrchestrator {
     }
   }
 
+  getActiveRule(): SiteRule | null {
+    return this.activeRule;
+  }
+
+  getQueue(): AutoTranslateQueue {
+    return this.queue;
+  }
+
   /** Unified cap: slider 1..10 when auto ON, absolute 3 when OFF. */
   private async applyCap() {
     const [enabled, slider] = await Promise.all([

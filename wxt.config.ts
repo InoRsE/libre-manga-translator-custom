@@ -22,6 +22,7 @@ export default defineConfig({
       "storage",
       "unlimitedStorage",
       "declarativeNetRequest",
+      "notifications",
     ],
     host_permissions: ["<all_urls>"],
     web_accessible_resources: [

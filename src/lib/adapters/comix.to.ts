@@ -22,8 +22,8 @@ export default {
     regex: "^$",
     source: "path",
   },
-  containerSelector: ".reader-container, #reader",
-  imageSelector: ".reader-container img, .chapter-images img",
+  containerSelector: ".reader-container, #reader, .reader, #chapter-images",
+  imageSelector: ".reader-container img, .chapter-images img, #reader img, .reader img, #chapter-images img",
   pillPosition: "top-left",
   toolbarPosition: "top-left",
 } satisfies SiteRule;

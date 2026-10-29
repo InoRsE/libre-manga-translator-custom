@@ -2,6 +2,7 @@ import Overlay from "@/lib/components/Overlay.svelte";
 import Sidebar from "@/lib/components/Sidebar.svelte";
 import FloatingTrigger from "@/lib/components/FloatingTrigger.svelte";
 import { AutoTranslateOrchestrator } from "./auto-translate";
+import { ChapterPreparationManager } from "./chapter-prep";
 import * as Registry from "./translation-registry";
 import { mount, unmount } from "svelte";
 import { ShadowRootContentScriptUi } from "#imports";
@@ -31,10 +32,34 @@ const srcKey = (src: string) =>
 // Wait until the image has a real layout (loaded + non-zero rendered box).
 // Measuring a hidden/not-yet-loaded image freezes the wrapper at 0×0 and
 // misplaces the whole overlay on revisit.
+// Background-tab safe: uses setTimeout so progress never freezes when the tab is unfocused.
 async function waitForLaidOutImage(
   img: MangaTargetElement,
-  timeoutMs = 3000,
+  timeoutMs = 8000,
 ): Promise<boolean> {
+  if (img instanceof HTMLImageElement) {
+    if (img.loading === "lazy") img.loading = "eager";
+    const dataSrc =
+      img.getAttribute("data-src") ||
+      img.getAttribute("data-lazy-src") ||
+      img.getAttribute("data-original") ||
+      img.getAttribute("data-url");
+    if (
+      dataSrc &&
+      (!img.src ||
+        img.src.startsWith("data:image/svg") ||
+        img.src === window.location.href)
+    ) {
+      img.src = dataSrc;
+    }
+    if (!img.complete && img.src) {
+      try {
+        const preload = new Image();
+        preload.src = img.src;
+      } catch {}
+    }
+  }
+
   const ready = () => {
     const naturalW = "naturalWidth" in img ? img.naturalWidth : img.width;
     const naturalH = "naturalHeight" in img ? img.naturalHeight : img.height;
@@ -58,7 +83,9 @@ async function waitForLaidOutImage(
   const start = performance.now();
   while (performance.now() - start < timeoutMs) {
     if (!document.body.contains(img)) return false;
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    // When the tab is in the background, requestAnimationFrame is paused by Chrome.
+    // Use setTimeout so chapter preparation advances in background tabs.
+    await new Promise<void>((r) => setTimeout(r, 60));
     if (ready()) return true;
   }
   return ready();
@@ -865,6 +892,34 @@ export default defineContentScript({
     autoTranslator.init(startTranslationPipeline);
     ctx.onInvalidated(() => autoTranslator.destroy());
 
+    // ── Chapter Preparation Engine ──────────────────────────────────────
+    const chapterPrepManager = new ChapterPreparationManager(autoTranslator);
+    ctx.onInvalidated(() => chapterPrepManager.destroy());
+
+    const onChapterPrepStart = (e: Event) => {
+      const detail = (e as CustomEvent<{ notify?: boolean }>).detail;
+      chapterPrepManager.start({ notify: detail?.notify ?? true });
+    };
+    const onChapterPrepStop = () => {
+      chapterPrepManager.stop();
+    };
+    const onChapterPrepGet = () => {
+      document.dispatchEvent(
+        new CustomEvent("lmt:chapter-prep-progress", {
+          detail: chapterPrepManager.getProgress(),
+        }),
+      );
+    };
+
+    document.addEventListener("lmt:chapter-prep-start", onChapterPrepStart);
+    document.addEventListener("lmt:chapter-prep-stop", onChapterPrepStop);
+    document.addEventListener("lmt:chapter-prep-get", onChapterPrepGet);
+    ctx.onInvalidated(() => {
+      document.removeEventListener("lmt:chapter-prep-start", onChapterPrepStart);
+      document.removeEventListener("lmt:chapter-prep-stop", onChapterPrepStop);
+      document.removeEventListener("lmt:chapter-prep-get", onChapterPrepGet);
+    });
+
     // ── Floating Hover Trigger ──────────────────────────────────────────
     // Indirect hover mapping (descendant / beneath-cursor) is gated on the
     // active rule's reader container so episode cards and nav chrome on list
@@ -918,6 +973,21 @@ export default defineContentScript({
     });
 
     browser.runtime.onMessage.addListener(async (msg, _, sendResponse) => {
+      if (msg.type === "GET_CHAPTER_STATUS") {
+        sendResponse(chapterPrepManager.getProgress());
+        return true;
+      }
+      if (msg.type === "START_CHAPTER_PREP") {
+        chapterPrepManager
+          .start({ notify: msg.data?.notify ?? true })
+          .then((prog) => sendResponse(prog));
+        return true;
+      }
+      if (msg.type === "STOP_CHAPTER_PREP") {
+        sendResponse(chapterPrepManager.stop());
+        return true;
+      }
+
       // Test Regex from popup settings to show live result
       if (msg.type === "TEST_REGEX_RULE") {
         getSiteRule([msg.data.rule]).then((result) =>

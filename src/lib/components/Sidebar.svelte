@@ -18,6 +18,7 @@
   import { openSetupTab } from "@/lib/utils";
   import DetectionSettings from "./settings/DetectionSettings.svelte";
   import AutoTranslateToggle from "./settings/AutoTranslateToggle.svelte";
+  import ChapterPrepCard from "./settings/ChapterPrepCard.svelte";
   import OcrSettings from "./settings/OcrSettings.svelte";
   import BackendSettings from "./settings/BackendSettings.svelte";
   import TypographySettings from "./settings/TypographySettings.svelte";
@@ -577,6 +578,9 @@
                 </div>
               {/if}
             </div>
+
+            <!-- Chapter Preparation card -->
+            <ChapterPrepCard />
 
             <!-- Auto Translate engine card -->
             <AutoTranslateToggle

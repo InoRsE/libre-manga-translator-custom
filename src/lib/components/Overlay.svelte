@@ -707,8 +707,16 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
       // what is uploaded. Zero boxes still opens the editor — there is nothing to
       // number, and an unnumbered page gives the model no region to answer for.
       const skipStage = skipRefining || autoTranslate || currentMode === "gemini";
-      if (skipStage && bboxes.length > 0) {
-        await executeTranslation();
+      if (skipStage) {
+        if (bboxes.length > 0) {
+          await executeTranslation();
+        } else {
+          // Page has 0 detected speech bubbles (art spread, cover, or no text).
+          // Settle as done so chapter preparation and auto-translate can proceed.
+          mode = "results";
+          translatedUrl = rawImageUrl ?? "";
+          Registry.markDone(originalSrc);
+        }
       } else {
         mode = "refining";
         Registry.markIdle(originalSrc);
