@@ -71,6 +71,9 @@ interface DebugEntry {
   timestamp: number;
   success: boolean;
   mode: string;
+  geminiWorkflow?: "vision" | "text";
+  fallback?: boolean;
+  fallbackReason?: string;
   version?: string;
   device?: string;
   backend?: "webgpu" | "wasm";
@@ -85,6 +88,7 @@ interface DebugEntry {
     ocr?: number;
     translate?: number;
     inpaint?: number;
+    render?: number;
     total?: number;
   };
   ocrMinConfidence?: number;

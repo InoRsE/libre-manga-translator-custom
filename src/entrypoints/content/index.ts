@@ -173,6 +173,18 @@ export default defineContentScript({
       { url: string; boxesKey: string }
     >(); // inpainted base images, keyed to the exact set of painted boxes
     const debugEntryIdBySrc = new Map<string, string>(); // src → last debug entry id
+    const lastTranslateInfoBySrc = new Map<
+      string,
+      {
+        mode: string;
+        workflow?: "vision" | "text";
+        duration: number;
+        ocrMs?: number;
+        translateMs?: number;
+        fallback?: boolean;
+        fallbackReason?: string;
+      }
+    >();
     const overlays = new Map<
       string,
       { ui: ShadowRootContentScriptUi<any>; wrapper: HTMLElement }
@@ -481,6 +493,7 @@ export default defineContentScript({
                   const runtimeItems = await storage.getItems([
                     "local:gemini-key",
                     "sync:gemini-model",
+                    "sync:gemini-workflow",
                     "sync:ocr-min-confidence",
                     "sync:ocr-engine",
                     "sync:llm-model",
@@ -509,6 +522,9 @@ export default defineContentScript({
                       sourceLang: srcLang,
                       geminiKey: runtime["local:gemini-key"] as string | undefined,
                       geminiModel: runtime["sync:gemini-model"] as string | undefined,
+                      geminiWorkflow:
+                        (runtime["sync:gemini-workflow"] as "vision" | "text" | undefined) ??
+                        DefaultConfig.geminiWorkflow,
                       ocrMinConfidence: runtime["sync:ocr-min-confidence"] as number | undefined,
                       ocrEngine:
                         (runtime["sync:ocr-engine"] as string | undefined) ??
@@ -580,6 +596,9 @@ export default defineContentScript({
                     timestamp: Date.now(),
                     success: true,
                     mode: curMode,
+                    geminiWorkflow: curMode === "gemini" ? (resp?.geminiWorkflow ?? "vision") : undefined,
+                    fallback: resp?.fallback,
+                    fallbackReason: resp?.fallbackReason,
                     version: debugCtx.version,
                     device: debugCtx.device,
                     backend: curMode === "webgpu" ? backend : undefined,
@@ -616,6 +635,16 @@ export default defineContentScript({
                       debugEntryIdBySrc.set(src, entryId);
                     })
                     .catch((err) => console.warn("LMT: debug-log write failed:", err));
+
+                  lastTranslateInfoBySrc.set(src, {
+                    mode: curMode,
+                    workflow: curMode === "gemini" ? (resp?.geminiWorkflow ?? "vision") : undefined,
+                    duration,
+                    ocrMs: resp?.timing?.ocr,
+                    translateMs: resp?.timing?.translate,
+                    fallback: resp?.fallback,
+                    fallbackReason: resp?.fallbackReason,
+                  });
 
                   const cacheKey = await translationKey();
                   storage
@@ -749,12 +778,34 @@ export default defineContentScript({
                     }
                   }
 
+                  const tRender = performance.now();
                   const translatedSrc = await drawTranslations(
                     cached.url,
                     bboxes,
                     translations,
                   );
+                  const renderMs = performance.now() - tRender;
                   translatedSrcMap.set(srcKey(translatedSrc), originalSrc);
+
+                  const debugId = debugEntryIdBySrc.get(src);
+                  if (debugId) {
+                    await updateDebugEntry(debugId, {
+                      timing: { render: renderMs },
+                    });
+                  }
+
+                  const info = lastTranslateInfoBySrc.get(src);
+                  const totalPipelineMs = (info?.duration ?? 0) + (inpaintMs ?? 0) + renderMs;
+                  console.log(
+                    `[LMT Timing] workflow=${info?.mode === "gemini" ? (info.workflow ?? "vision") : (info?.mode ?? "unknown")} ` +
+                    `total=${totalPipelineMs.toFixed(0)}ms ` +
+                    `[detect=${lastDetectMs ? lastDetectMs.toFixed(0) : "-"}ms, ` +
+                    `ocr=${info?.ocrMs !== undefined ? info.ocrMs.toFixed(0) : "-"}ms, ` +
+                    `gemini=${info?.translateMs !== undefined ? info.translateMs.toFixed(0) : "-"}ms, ` +
+                    `inpaint=${inpaintMs !== undefined ? inpaintMs.toFixed(0) : "-"}ms, ` +
+                    `render=${renderMs.toFixed(0)}ms]` +
+                    `${info?.fallback ? ` (FALLBACK: ${info.fallbackReason})` : ""}`
+                  );
 
                   // Persist edited translations and bboxes so cache re-open shows them
                   const cache = await storage.getItem<PageCache>(

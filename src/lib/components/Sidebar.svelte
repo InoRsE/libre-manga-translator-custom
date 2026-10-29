@@ -53,6 +53,7 @@
   let serverApiKey = $state(DefaultConfig.serverApiKey);
   let geminiKey = $state("");
   let geminiModel = $state(DefaultConfig.geminiModels[0].id);
+  let geminiWorkflow = $state<"vision" | "text">(DefaultConfig.geminiWorkflow);
   let cachedLlms = $state<string[]>([]);
   let textFont = $state(DefaultConfig.bundleFonts[0].id);
   let inpaintMethod = $state(DefaultConfig.inpaintMethod);
@@ -172,6 +173,7 @@
         "sync:ocr-min-confidence",
         "local:gemini-key",
         "sync:gemini-model",
+        "sync:gemini-workflow",
         "sync:detection-model",
         "sync:current-mode",
         "sync:source-lang",
@@ -203,6 +205,7 @@
         saved["sync:auto-translate-concurrency"] ?? autoTranslateConcurrency;
       geminiKey = saved["local:gemini-key"] ?? geminiKey;
       geminiModel = saved["sync:gemini-model"] ?? geminiModel;
+      geminiWorkflow = saved["sync:gemini-workflow"] ?? geminiWorkflow;
       detectionModel = normalizeDetectionModel(saved["sync:detection-model"] ?? detectionModel);
       ocrMinConfidence = saved["sync:ocr-min-confidence"] ?? ocrMinConfidence;
       ocrEngine = saved["sync:ocr-engine"] ?? ocrEngine;
@@ -244,6 +247,7 @@
         { key: "sync:ocr-min-confidence", value: ocrMinConfidence },
         { key: "local:gemini-key", value: geminiKey },
         { key: "sync:gemini-model", value: geminiModel },
+        { key: "sync:gemini-workflow", value: geminiWorkflow },
         { key: "sync:source-lang", value: sourceLang },
         { key: "sync:target-lang", value: targetLang },
         { key: "sync:detection-model", value: detectionModel },
@@ -509,6 +513,7 @@
                   bind:serverApiKey
                   bind:geminiKey
                   bind:geminiModel
+                  bind:geminiWorkflow
                   bind:cachedLlms
                 />
               </div>

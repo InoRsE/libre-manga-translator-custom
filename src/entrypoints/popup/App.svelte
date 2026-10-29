@@ -66,6 +66,7 @@
   // Backend / AI Keys
   let geminiKey = $state("");
   let geminiModel = $state(DefaultConfig.geminiModels[0].id);
+  let geminiWorkflow = $state<"vision" | "text">(DefaultConfig.geminiWorkflow);
   let llmModel = $state(DefaultConfig.llmModels[0].id);
   let llmTemperature = $state(DefaultConfig.llmTemperature);
   let serverHost = $state(DefaultConfig.serverHost);
@@ -182,6 +183,7 @@
           "sync:ocr-min-confidence",
           "local:gemini-key",
           "sync:gemini-model",
+          "sync:gemini-workflow",
           "sync:detection-model",
           "sync:current-mode",
           "sync:source-lang",
@@ -216,6 +218,7 @@
       autoTranslateConcurrency = saved["sync:auto-translate-concurrency"] ?? autoTranslateConcurrency;
       geminiKey = saved["local:gemini-key"] ?? geminiKey;
       geminiModel = saved["sync:gemini-model"] ?? geminiModel;
+      geminiWorkflow = saved["sync:gemini-workflow"] ?? geminiWorkflow;
       detectionModel = normalizeDetectionModel(saved["sync:detection-model"] ?? detectionModel);
       ocrMinConfidence = saved["sync:ocr-min-confidence"] ?? ocrMinConfidence;
       ocrEngine = saved["sync:ocr-engine"] ?? ocrEngine;
@@ -257,6 +260,7 @@
         { key: "sync:script-gate", value: scriptGate },
         { key: "local:gemini-key", value: geminiKey },
         { key: "sync:gemini-model", value: geminiModel },
+        { key: "sync:gemini-workflow", value: geminiWorkflow },
         { key: "sync:source-lang", value: sourceLang },
         { key: "sync:target-lang", value: targetLang },
         { key: "sync:detection-model", value: detectionModel },
@@ -494,8 +498,8 @@
           {/if}
         {:else if currentMode === "gemini"}
           <div class="flex items-center justify-between text-xs text-[var(--text-dim)] px-1">
-            <span>Model: {geminiModel}</span>
-            <span class="{geminiKey ? 'text-[var(--accent-emerald)] font-medium' : 'text-[var(--accent-amber)] font-medium'}">
+            <span class="truncate">Model: {geminiModel} ({geminiWorkflow === 'text' ? 'Fast Text' : 'Vision'})</span>
+            <span class="{geminiKey ? 'text-[var(--accent-emerald)] font-medium shrink-0 ml-1' : 'text-[var(--accent-amber)] font-medium shrink-0 ml-1'}">
               {geminiKey ? "Key set" : "Needs key"}
             </span>
           </div>
@@ -833,6 +837,7 @@
             bind:serverApiKey
             bind:geminiKey
             bind:geminiModel
+            bind:geminiWorkflow
             bind:cachedLlms
           />
         </div>

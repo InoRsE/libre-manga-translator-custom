@@ -248,7 +248,7 @@
                   ? 'bg-[var(--accent-cyan-soft)] text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/30'
                   : 'bg-[var(--accent-amber-soft)] text-[var(--accent-amber)] border border-[var(--accent-amber)]/30'}"
             >
-              {log.mode}
+              {log.mode === 'gemini' && log.geminiWorkflow ? `GEMINI·${log.geminiWorkflow.toUpperCase()}` : log.mode}
             </span>
           </div>
           <div class="flex items-center gap-1.5 text-[10px] text-[var(--text-dim)] font-mono">
@@ -297,10 +297,27 @@
               {#if log.timing?.inpaint}
                 <div>Inpaint: {formatDuration(log.timing.inpaint)}</div>
               {/if}
+              {#if log.timing?.render}
+                <div>Render: {formatDuration(log.timing.render)}</div>
+              {/if}
             </div>
+
+            {#if log.fallback}
+              <div class="text-[var(--accent-amber)] font-mono text-[10px] bg-[var(--accent-amber-soft)] px-2 py-1 rounded border border-[var(--accent-amber)]/30">
+                Fallback to Vision: {log.fallbackReason || 'Unknown error'}
+              </div>
+            {/if}
 
             <!-- Models & pipeline metadata -->
             <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] font-mono text-[var(--text-muted)]">
+              {#if log.geminiWorkflow}
+                <div class="flex items-center gap-1">
+                  <span class="text-[var(--text-dim)] uppercase">Flow:</span>
+                  <span class="font-bold {log.geminiWorkflow === 'text' ? 'text-[var(--accent-cyan)]' : 'text-[var(--accent-emerald)]'}">
+                    {log.geminiWorkflow === 'text' ? 'Fast Text' : 'Vision'}
+                  </span>
+                </div>
+              {/if}
               {#if log.models?.detection}
                 <div class="flex items-center gap-1">
                   <span class="text-[var(--text-dim)] uppercase">Det:</span>

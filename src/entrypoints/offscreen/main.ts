@@ -1,5 +1,9 @@
 import { UNKNOWN_DETECTION_MODEL_MESSAGE, detectTextBubble, releaseDetection } from "@/lib/detections/main";
-import { makeSiteRuleWithGemini, translateWithGemini } from "@/lib/gemini/main";
+import {
+  makeSiteRuleWithGemini,
+  translateTextWithGemini,
+  translateWithGemini,
+} from "@/lib/gemini/main";
 import "@/assets/app.css";
 import { releaseOcrEngines, textRecognise } from "@/lib/ocr/main";
 import {
@@ -61,6 +65,7 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
       sourceLang,
       geminiKey,
       geminiModel,
+      geminiWorkflow,
       ocrMinConfidence,
       ocrEngine,
       llmModel,
@@ -156,6 +161,91 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
           timing: { ocr, translate: performance.now() - tTrans },
         });
       })().catch((err) => sendResponse({ error: err.message }));
+    } else if (geminiWorkflow === "text") {
+      (async () => {
+        await yieldToMain();
+        let ocrDuration = 0;
+        let ocrResults: any[] = [];
+        let ocrGate: any = { mode: "off", checked: 0, skipped: 0, unavailable: false };
+
+        try {
+          const tOcr = performance.now();
+          const ocrOut = await textRecognise(
+            src,
+            bboxes,
+            sourceLang,
+            ocrMinConfidence,
+            undefined,
+            undefined,
+            gateOptions,
+            ocrEngine,
+          );
+          ocrResults = ocrOut.results;
+          ocrGate = ocrOut.gate;
+          ocrDuration = performance.now() - tOcr;
+          await yieldToMain();
+
+          const texts = ocrResults.map((r) => (r.gateSkip ? "" : r.text));
+          const allEmpty = bboxes.length > 0 && texts.every((t) => !t || t.trim().length === 0);
+          if (allEmpty) {
+            throw new Error("Local OCR yielded empty text across all boxes — falling back to Vision");
+          }
+
+          const tTrans = performance.now();
+          const res = await translateTextWithGemini(
+            texts,
+            geminiKey,
+            targetLang,
+            sourceLang,
+            seriesContext,
+            geminiModel,
+            llmTemperature,
+          );
+          const transDuration = performance.now() - tTrans;
+
+          sendResponse({
+            ...res,
+            sourceTexts: ocrResults.map((r) => r.text),
+            gateSkip: ocrResults.map((r) => r.gateSkip ?? null),
+            gate: ocrGate,
+            timing: { ocr: ocrDuration, translate: transDuration },
+            backend: await detectBackend(),
+            geminiWorkflow: "text",
+            fallback: false,
+          });
+        } catch (err: any) {
+          console.warn("LMT: Fast text workflow failed or declined, falling back to Vision:", err?.message);
+          const fallbackReason = err?.message ?? "Text translation failed";
+
+          const tVision = performance.now();
+          const res = await translateWithGemini(
+            src,
+            bboxes,
+            geminiKey,
+            targetLang,
+            sourceLang,
+            seriesContext,
+            geminiModel,
+            llmTemperature,
+          );
+          const visionDuration = performance.now() - tVision;
+
+          sendResponse({
+            ...res,
+            sourceTexts: res.sourceTexts ?? (ocrResults.length ? ocrResults.map((r) => r.text) : new Array(bboxes.length).fill("")),
+            gateSkip: new Array(bboxes.length).fill(null),
+            gate: ocrGate,
+            timing: {
+              ...(ocrDuration > 0 ? { ocr: ocrDuration } : {}),
+              translate: visionDuration,
+            },
+            backend: await detectBackend(),
+            geminiWorkflow: "text",
+            fallback: true,
+            fallbackReason,
+          });
+        }
+      })().catch((err) => sendResponse({ error: err.message }));
     } else {
       (async () => {
         await yieldToMain();
@@ -180,6 +270,8 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
           gate: { mode: "off", checked: 0, skipped: 0, unavailable: false },
           timing: { translate: performance.now() - tTrans },
           backend: await detectBackend(),
+          geminiWorkflow: "vision",
+          fallback: false,
         });
       })().catch((err) => sendResponse({ error: err.message }));
     }

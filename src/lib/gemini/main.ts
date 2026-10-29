@@ -1,7 +1,43 @@
 import { MAKE_SITE_RULE_PROMPT } from "../adapters";
 import { DefaultConfig } from "../configs";
 import { drawNumberedBboxes } from "./utils";
-import { validateTranslationResult } from "../server/validator";
+import { buildTranslationPrompts } from "../prompts";
+import { parseLlmJson, validateTranslationResult } from "../server/validator";
+
+export async function translateTextWithGemini(
+  ocrTexts: string[],
+  apiKey: string,
+  targetLang: string,
+  sourceLang: string,
+  seriesContext?: SeriesContext,
+  model = DefaultConfig.geminiModels[0].id,
+  temperature = DefaultConfig.llmTemperature,
+): Promise<TranslateResult> {
+  if (!ocrTexts || ocrTexts.length === 0) {
+    return { translations: [], sourceTexts: [] };
+  }
+
+  const { systemPrompt, userPrompt } = buildTranslationPrompts(
+    ocrTexts,
+    targetLang,
+    sourceLang,
+    seriesContext,
+  );
+
+  const raw = await sendRequestToGemini(
+    systemPrompt,
+    userPrompt,
+    apiKey,
+    model,
+    temperature,
+  );
+
+  const validated = validateTranslationResult(raw, ocrTexts.length);
+  return {
+    ...validated,
+    sourceTexts: ocrTexts,
+  };
+}
 
 export async function translateWithGemini(
   imageSrc: string,
@@ -150,5 +186,5 @@ export async function sendRequestToGemini(
     throw new Error("Gemini API returned empty response parts");
   }
 
-  return JSON.parse(resultText);
+  return parseLlmJson(resultText);
 }
