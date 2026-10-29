@@ -74,6 +74,9 @@ interface DebugEntry {
   geminiWorkflow?: "vision" | "text";
   fallback?: boolean;
   fallbackReason?: string;
+  ocrBoxesTotal?: number;
+  ocrBoxesRecognized?: number;
+  ocrCompleteness?: number;
   version?: string;
   device?: string;
   backend?: "webgpu" | "wasm";

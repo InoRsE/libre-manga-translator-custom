@@ -1,6 +1,7 @@
 import {
   boostContrast,
   cropBubbleFromImage,
+  isWatermarkText,
   normalizePolarity,
   padImageForOCR,
   sliceImageDataIntoLines,
@@ -164,12 +165,23 @@ export async function textRecognise(
       },
     );
 
-    const result: OCRResult[] = rawResults.map((r, i) => ({
-      text: r.text,
-      confidence: r.confidence,
-      failed: r.failed,
-      gateSkip: gateSkip[i],
-    }));
+    const result: OCRResult[] = rawResults.map((r, i) => {
+      const isWatermark = isWatermarkText(r.text);
+      if (isWatermark) {
+        return {
+          text: "",
+          confidence: 0,
+          failed: true,
+          gateSkip: "watermark" as any,
+        };
+      }
+      return {
+        text: r.text,
+        confidence: r.confidence,
+        failed: r.failed,
+        gateSkip: gateSkip[i],
+      };
+    });
 
     // Post-OCR verification & rescue
     let skipped = gateSkip.filter((s) => s !== null).length;

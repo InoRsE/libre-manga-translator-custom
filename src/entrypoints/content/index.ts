@@ -183,6 +183,9 @@ export default defineContentScript({
         translateMs?: number;
         fallback?: boolean;
         fallbackReason?: string;
+        ocrBoxesTotal?: number;
+        ocrBoxesRecognized?: number;
+        ocrCompleteness?: number;
       }
     >();
     const overlays = new Map<
@@ -599,6 +602,9 @@ export default defineContentScript({
                     geminiWorkflow: curMode === "gemini" ? (resp?.geminiWorkflow ?? "vision") : undefined,
                     fallback: resp?.fallback,
                     fallbackReason: resp?.fallbackReason,
+                    ocrBoxesTotal: resp?.ocrBoxesTotal,
+                    ocrBoxesRecognized: resp?.ocrBoxesRecognized,
+                    ocrCompleteness: resp?.ocrCompleteness,
                     version: debugCtx.version,
                     device: debugCtx.device,
                     backend: curMode === "webgpu" ? backend : undefined,
@@ -644,6 +650,9 @@ export default defineContentScript({
                     translateMs: resp?.timing?.translate,
                     fallback: resp?.fallback,
                     fallbackReason: resp?.fallbackReason,
+                    ocrBoxesTotal: resp?.ocrBoxesTotal,
+                    ocrBoxesRecognized: resp?.ocrBoxesRecognized,
+                    ocrCompleteness: resp?.ocrCompleteness,
                   });
 
                   const cacheKey = await translationKey();
@@ -796,8 +805,12 @@ export default defineContentScript({
 
                   const info = lastTranslateInfoBySrc.get(src);
                   const totalPipelineMs = (info?.duration ?? 0) + (inpaintMs ?? 0) + renderMs;
+                  const completenessStr =
+                    info?.ocrBoxesTotal !== undefined
+                      ? ` completeness=${info.ocrBoxesRecognized ?? 0}/${info.ocrBoxesTotal}(${info.ocrCompleteness ?? 0}%)`
+                      : "";
                   console.log(
-                    `[LMT Timing] workflow=${info?.mode === "gemini" ? (info.workflow ?? "vision") : (info?.mode ?? "unknown")} ` +
+                    `[LMT Timing] workflow=${info?.mode === "gemini" ? (info.workflow ?? "vision") : (info?.mode ?? "unknown")}${completenessStr} ` +
                     `total=${totalPipelineMs.toFixed(0)}ms ` +
                     `[detect=${lastDetectMs ? lastDetectMs.toFixed(0) : "-"}ms, ` +
                     `ocr=${info?.ocrMs !== undefined ? info.ocrMs.toFixed(0) : "-"}ms, ` +

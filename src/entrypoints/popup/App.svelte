@@ -287,7 +287,7 @@
     if (loadingSettings) return;
     [
       detectionMinConfidence, skipBboxRefining, autoTranslate, autoTranslateConcurrency,
-      ocrMinConfidence, ocrEngine, scriptGate, geminiKey, geminiModel, sourceLang, targetLang,
+      ocrMinConfidence, ocrEngine, scriptGate, geminiKey, geminiModel, geminiWorkflow, sourceLang, targetLang,
       detectionModel, currentMode, seriesContext.seriesName, seriesContext.summary, seriesContext.dictionary,
       textFont, customFonts.length, inpaintMethod, alwaysInpaint, llmModel, llmTemperature, serverHost, serverSchema,
       serverModel, useServerApiKey, serverApiKey, customRules.length,
@@ -297,7 +297,6 @@
 
   function setMode(modeId: string) {
     currentMode = modeId;
-    if (modeId === "gemini") sourceLang = "Auto-Detect";
   }
 
   function swapLanguages() {

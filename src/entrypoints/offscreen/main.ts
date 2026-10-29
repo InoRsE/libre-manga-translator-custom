@@ -185,10 +185,25 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
           ocrDuration = performance.now() - tOcr;
           await yieldToMain();
 
+          const totalBoxes = bboxes.length;
           const texts = ocrResults.map((r) => (r.gateSkip ? "" : r.text));
-          const allEmpty = bboxes.length > 0 && texts.every((t) => !t || t.trim().length === 0);
-          if (allEmpty) {
-            throw new Error("Local OCR yielded empty text across all boxes — falling back to Vision");
+          const recognizedCount = texts.filter((t) => t && t.trim().length > 0).length;
+          const completenessRatio = totalBoxes > 0 ? recognizedCount / totalBoxes : 1;
+
+          // Critical completeness threshold:
+          // If fewer than 60% of detected speech bubbles have recognized text (e.g. 5 of 9 are blank),
+          // local OCR has experienced severe dialogue loss.
+          // Do NOT silently pretend this incomplete output is a full translation!
+          const MIN_OCR_COMPLETENESS_RATIO = 0.60;
+          if (totalBoxes > 1 && completenessRatio < MIN_OCR_COMPLETENESS_RATIO) {
+            throw new Error(
+              `Low OCR completeness: only ${recognizedCount}/${totalBoxes} dialogue boxes recognized (${Math.round(completenessRatio * 100)}%) — falling back to Vision for full dialogue recovery`,
+            );
+          }
+          if (totalBoxes === 1 && recognizedCount === 0) {
+            throw new Error(
+              "Local OCR produced empty text for the single detected dialogue box — falling back to Vision",
+            );
           }
 
           const tTrans = performance.now();
@@ -212,10 +227,18 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
             backend: await detectBackend(),
             geminiWorkflow: "text",
             fallback: false,
+            ocrBoxesTotal: totalBoxes,
+            ocrBoxesRecognized: recognizedCount,
+            ocrCompleteness: Math.round(completenessRatio * 100),
           });
         } catch (err: any) {
           console.warn("LMT: Fast text workflow failed or declined, falling back to Vision:", err?.message);
           const fallbackReason = err?.message ?? "Text translation failed";
+          const totalBoxes = bboxes.length;
+          const recognizedCount = ocrResults
+            .map((r) => (r.gateSkip ? "" : r.text))
+            .filter((t) => t && t.trim().length > 0).length;
+          const completenessRatio = totalBoxes > 0 ? recognizedCount / totalBoxes : 0;
 
           const tVision = performance.now();
           const res = await translateWithGemini(
@@ -243,6 +266,9 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
             geminiWorkflow: "text",
             fallback: true,
             fallbackReason,
+            ocrBoxesTotal: totalBoxes,
+            ocrBoxesRecognized: recognizedCount,
+            ocrCompleteness: Math.round(completenessRatio * 100),
           });
         }
       })().catch((err) => sendResponse({ error: err.message }));

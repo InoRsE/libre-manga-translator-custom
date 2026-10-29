@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { translateTextWithGemini, sendRequestToGemini } from "../../src/lib/gemini/main";
 import { buildTranslationPrompts } from "../../src/lib/prompts";
 import { validateTranslationResult } from "../../src/lib/server/validator";
+import { isWatermarkText } from "../../src/lib/ocr/utils";
 
 describe("Gemini Fast Text Workflow Probe (M1.1)", () => {
   const originalFetch = globalThis.fetch;
@@ -224,4 +225,48 @@ describe("Gemini Fast Text Workflow Probe (M1.1)", () => {
       expect(debugTiming.total).toBe(1775);
     });
   });
+
+  describe("Watermark and Non-Dialogue Filtering", () => {
+    it("identifies scanlation watermarks like mangapanda", () => {
+      expect(isWatermarkText("mangapanda")).toBe(true);
+      expect(isWatermarkText("MangaStream")).toBe(true);
+      expect(isWatermarkText("www.mangapanda.com")).toBe(true);
+      expect(isWatermarkText("https://batoto.com")).toBe(true);
+    });
+
+    it("does not flag valid dialogue containing normal words", () => {
+      expect(isWatermarkText("WHY DID THEY DROP")).toBe(false);
+      expect(isWatermarkText("CARRIER...")).toBe(false);
+      expect(isWatermarkText("...IT'LL BE OUT OF QUICK!")).toBe(false);
+      expect(isWatermarkText("Commander, enemy approaching!")).toBe(false);
+    });
+  });
+
+  describe("OCR Completeness Assessment & Guard", () => {
+    it("detects when OCR completeness is below 60% threshold", () => {
+      const bboxes = new Array(9).fill({ x1: 0, y1: 0, x2: 100, y2: 100, confidence: 0.9 });
+      // 5 out of 9 are blank (the exact Zipang Ch.54 failure case)
+      const ocrResults = [
+        "WHY DID THEY DROP",
+        "",
+        "CARRIER...",
+        "",
+        "",
+        "",
+        "...IT'LL BE OUT OF QUICK!",
+        "mangapanda", // watermark
+        "",
+      ];
+
+      const cleanedTexts = ocrResults.map((t) => (isWatermarkText(t) ? "" : t));
+      const recognizedCount = cleanedTexts.filter((t) => t.trim().length > 0).length;
+      const completeness = recognizedCount / bboxes.length;
+
+      // 3 valid out of 9 = 33% completeness
+      expect(recognizedCount).toBe(3);
+      expect(completeness).toBeCloseTo(0.333, 2);
+      expect(completeness < 0.60).toBe(true);
+    });
+  });
 });
+

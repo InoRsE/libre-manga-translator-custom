@@ -318,6 +318,14 @@
                   </span>
                 </div>
               {/if}
+              {#if log.ocrBoxesTotal !== undefined}
+                <div class="flex items-center gap-1">
+                  <span class="text-[var(--text-dim)] uppercase">Boxes:</span>
+                  <span class="font-bold {log.ocrCompleteness && log.ocrCompleteness >= 80 ? 'text-[var(--accent-emerald)]' : log.ocrCompleteness && log.ocrCompleteness >= 60 ? 'text-[var(--accent-amber)]' : 'text-[var(--accent-rose)]'}">
+                    {log.ocrBoxesRecognized ?? 0}/{log.ocrBoxesTotal} ({log.ocrCompleteness ?? 0}%)
+                  </span>
+                </div>
+              {/if}
               {#if log.models?.detection}
                 <div class="flex items-center gap-1">
                   <span class="text-[var(--text-dim)] uppercase">Det:</span>

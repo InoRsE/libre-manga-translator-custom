@@ -275,7 +275,7 @@
     if (loadingSettings) return;
     [
       detectionMinConfidence, skipBboxRefining, autoTranslate, autoTranslateConcurrency, ocrMinConfidence, scriptGate,
-      geminiKey, geminiModel, sourceLang, targetLang, detectionModel, currentMode,
+      geminiKey, geminiModel, geminiWorkflow, sourceLang, targetLang, detectionModel, currentMode,
       seriesContext.seriesName, seriesContext.summary, seriesContext.dictionary,
       textFont, customFonts.length, inpaintMethod, alwaysInpaint, llmModel, llmTemperature,
       serverHost, serverSchema, serverModel, useServerApiKey, serverApiKey, customRules.length,
@@ -288,7 +288,10 @@
   // loader while the download lands.
   $effect(() => {
     if (loadingSettings) return;
-    const isOcrMode = currentMode === "webgpu" || currentMode === "api";
+    const isOcrMode =
+      currentMode === "webgpu" ||
+      currentMode === "api" ||
+      (currentMode === "gemini" && geminiWorkflow === "text");
     const switchedToLocal = currentMode !== prevMode && isOcrMode;
     const groupChanged =
       resolveLangGroup(sourceLang).group !==
@@ -322,9 +325,6 @@
 
   function setMode(modeId: string) {
     currentMode = modeId;
-    if (modeId === "gemini") {
-      sourceLang = "Auto-Detect";
-    }
   }
 
   function swapLanguages() {
