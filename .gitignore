@@ -7,3 +7,5 @@ node_modules
 test-results
 playwright-report
 tests/output
+models/
+*.onnx
