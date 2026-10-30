@@ -19,29 +19,55 @@ export interface BatchTranslationRequest {
   createdAt: number;
 }
 
+export interface BatchCoordinatorStats {
+  batchesDispatched: number;
+  singlesFlushed: number;
+  singlesDirect: number;
+}
+
 /**
- * Coordinates 2-image Vision batching (M1.3) for Chapter Preparation.
+ * Coordinates 2-image Vision batching (M1.3.1) for Chapter Preparation.
  *
  * Guarantees:
  * 1. Exactly 2 images are sent together in one Gemini Vision API request when available.
- * 2. If only one eligible image remains (e.g. odd page count in chapter), the flush timer
- *    (600ms) discharges it through the standard single-image Vision path.
- * 3. Never deadlocks an odd-length queue or single manual page requests.
- * 4. Preserves truthful accounting: if a batch fails, both affected pages record failure.
+ * 2. Strict page identity: matching only by exact pageId. No positional fallbacks!
+ * 3. If only one eligible image remains (e.g. odd page count in chapter or no companion),
+ *    discharges it through standard single-image Vision path without deadlocks.
+ * 4. Error safety: pipeline errors resolve to `{ error: message }` conforming to the
+ *    runtime message contract, so Overlays and queues settle into idle/failed gracefully.
+ * 5. Complete accounting of paired vs flushed requests.
  */
 export class VisionBatchCoordinator {
   private pending: BatchTranslationRequest[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly FLUSH_DELAY_MS = 600;
+  private readonly FLUSH_DELAY_MS = 800;
+
+  private stats: BatchCoordinatorStats = {
+    batchesDispatched: 0,
+    singlesFlushed: 0,
+    singlesDirect: 0,
+  };
+
+  getStats(): BatchCoordinatorStats {
+    return { ...this.stats };
+  }
 
   async requestTranslation(
     req: Omit<BatchTranslationRequest, "resolve" | "reject" | "createdAt">,
-    options?: { allowBatch?: boolean },
+    options?: { allowBatch?: boolean; hasPendingCompanion?: boolean },
   ): Promise<any> {
     const allowBatch = options?.allowBatch ?? true;
+    const hasPendingCompanion = options?.hasPendingCompanion ?? true;
 
-    // Direct single-image path if batching is bypassed for this request
+    // Direct single-image path if batching is bypassed for this request (e.g. manual click)
     if (!allowBatch) {
+      this.stats.singlesDirect++;
+      return this.executeSingleDirect(req);
+    }
+
+    // If no other images exist in the chapter prep queue, flush immediately with 0ms delay!
+    if (!hasPendingCompanion && this.pending.length === 0) {
+      this.stats.singlesFlushed++;
       return this.executeSingleDirect(req);
     }
 
@@ -63,12 +89,13 @@ export class VisionBatchCoordinator {
         const pair = this.pending.splice(0, 2);
         this.executeBatch(pair);
       } else {
-        // First entry in queue: wait briefly for a second page to arrive
+        // First entry in queue: wait briefly for companion page's detection to land
         if (!this.flushTimer) {
           this.flushTimer = setTimeout(() => {
             this.flushTimer = null;
             if (this.pending.length > 0) {
               const single = this.pending.shift()!;
+              this.stats.singlesFlushed++;
               this.executeSingle(single);
             }
           }, this.FLUSH_DELAY_MS);
@@ -80,9 +107,14 @@ export class VisionBatchCoordinator {
   private async executeBatch(pair: BatchTranslationRequest[]): Promise<void> {
     const [reqA, reqB] = pair;
     try {
-      const pageIdA = reqA.originalSrc || reqA.src;
-      const pageIdB = reqB.originalSrc || reqB.src;
+      const pageIdA = String(reqA.originalSrc || reqA.src).trim();
+      const pageIdB = String(reqB.originalSrc || reqB.src).trim();
 
+      if (pageIdA === pageIdB) {
+        throw new Error(`Cannot batch duplicate pageId '${pageIdA}' with itself`);
+      }
+
+      this.stats.batchesDispatched++;
       const tBatchStart = performance.now();
       const resp = await getBrowser().runtime.sendMessage({
         type: "TRANSLATE_BATCH_IMAGES",
@@ -106,15 +138,19 @@ export class VisionBatchCoordinator {
         throw new Error("Batch translation response missing 'pages' array");
       }
 
-      const resA =
-        resp.pages.find((p: any) => p && String(p.pageId) === String(pageIdA)) ??
-        resp.pages[0];
-      const resB =
-        resp.pages.find((p: any) => p && String(p.pageId) === String(pageIdB)) ??
-        resp.pages[1];
+      // STRICT IDENTITY: Match explicitly by pageId. NO positional fallback!
+      const resA = resp.pages.find(
+        (p: any) => p && String(p.pageId).trim() === pageIdA,
+      );
+      const resB = resp.pages.find(
+        (p: any) => p && String(p.pageId).trim() === pageIdB,
+      );
 
-      if (!resA || !resB) {
-        throw new Error("Batch translation failed to map results to both pages");
+      if (!resA) {
+        throw new Error(`Batch translation missing exact result for pageId '${pageIdA}'`);
+      }
+      if (!resB) {
+        throw new Error(`Batch translation missing exact result for pageId '${pageIdB}'`);
       }
 
       // Strictly verify counts
@@ -131,7 +167,8 @@ export class VisionBatchCoordinator {
 
       console.log(
         `[LMT Batch Vision] 2 pages translated together in ${batchDuration.toFixed(0)}ms: ` +
-          `pageA=${reqA.bboxes.length} boxes, pageB=${reqB.bboxes.length} boxes`,
+          `pageA=${reqA.bboxes.length} boxes, pageB=${reqB.bboxes.length} boxes ` +
+          `(batch #${this.stats.batchesDispatched}, totalSinglesFlushed=${this.stats.singlesFlushed})`,
       );
 
       reqA.resolve({
@@ -169,8 +206,10 @@ export class VisionBatchCoordinator {
       });
     } catch (err: any) {
       console.warn("LMT: Vision batch request failed:", err?.message);
-      reqA.reject(err);
-      reqB.reject(err);
+      // Fulfill promise with error contract so overlay catches and releases queue slot cleanly
+      const errPayload = { error: err?.message ?? "Batch translation failed" };
+      reqA.resolve(errPayload);
+      reqB.resolve(errPayload);
     }
   }
 
@@ -187,31 +226,33 @@ export class VisionBatchCoordinator {
       });
 
       if (resp?.error) {
-        req.reject(new Error(resp.error));
+        req.resolve({ error: resp.error });
       } else {
         req.resolve(resp);
       }
     } catch (err: any) {
-      req.reject(err);
+      console.warn("LMT: Single translation request failed:", err?.message);
+      req.resolve({ error: err?.message ?? "Single translation failed" });
     }
   }
 
   private async executeSingleDirect(
     req: Omit<BatchTranslationRequest, "resolve" | "reject" | "createdAt">,
   ): Promise<any> {
-    const resp = await getBrowser().runtime.sendMessage({
-      type: "TRANSLATE_IMAGE",
-      data: {
-        src: req.src,
-        bboxes: req.bboxes,
-        seriesContext: req.seriesContext,
-      },
-      config: req.config,
-    });
-    if (resp?.error) {
-      throw new Error(resp.error);
+    try {
+      const resp = await getBrowser().runtime.sendMessage({
+        type: "TRANSLATE_IMAGE",
+        data: {
+          src: req.src,
+          bboxes: req.bboxes,
+          seriesContext: req.seriesContext,
+        },
+        config: req.config,
+      });
+      return resp;
+    } catch (err: any) {
+      return { error: err?.message ?? "Direct single translation failed" };
     }
-    return resp;
   }
 
   clear(): void {

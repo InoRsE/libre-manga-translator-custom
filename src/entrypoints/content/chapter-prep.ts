@@ -225,6 +225,38 @@ export class ChapterPreparationManager {
     document.addEventListener("lmt:translation-status", this.statusListener);
   }
 
+  /**
+   * Returns true if Chapter Preparation is actively running.
+   */
+  isActive(): boolean {
+    return this.status === "preparing";
+  }
+
+  /**
+   * Returns true if the given image src is tracked by the active chapter prep run.
+   */
+  isPreparingImage(src: string): boolean {
+    if (this.status !== "preparing") return false;
+    const k = Registry.srcKeyOf(src);
+    return this.targetKeys.has(k) || this.inFlightKeys.has(k);
+  }
+
+  /**
+   * Returns true if there are other pending images in the active chapter prep run.
+   * Used by VisionBatchCoordinator to determine if a companion image is forthcoming.
+   */
+  hasPendingCompanion(currentSrc?: string): boolean {
+    if (this.status !== "preparing") return false;
+    const currentKey = currentSrc ? Registry.srcKeyOf(currentSrc) : "";
+    for (const k of this.targetKeys) {
+      if (k !== currentKey) return true;
+    }
+    for (const k of this.inFlightKeys) {
+      if (k !== currentKey) return true;
+    }
+    return false;
+  }
+
   destroy(): void {
     this.stopHeartbeat();
     if (this.statusListener) {

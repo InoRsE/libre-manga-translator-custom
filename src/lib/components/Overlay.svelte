@@ -341,10 +341,15 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
 
     loadingMsg = "Translating text…";
 
-    const result = await requestTextTranslation(
-      $state.snapshot(bboxes),
-      isManuallySorted,
-    );
+    let result: any;
+    try {
+      result = await requestTextTranslation(
+        $state.snapshot(bboxes),
+        isManuallySorted,
+      );
+    } catch (err: any) {
+      result = { error: err?.message ?? "Translation request failed" };
+    }
     if (typeof result === "object" && "error" in result) {
       mode = "refining";
       showError(result.error);

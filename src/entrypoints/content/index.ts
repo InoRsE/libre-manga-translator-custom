@@ -196,6 +196,7 @@ export default defineContentScript({
       }
     >();
     const visionBatchCoordinator = new VisionBatchCoordinator();
+    let chapterPrepManager: ChapterPreparationManager | null = null;
     const overlays = new Map<
       string,
       { ui: ShadowRootContentScriptUi<any>; wrapper: HTMLElement }
@@ -553,25 +554,44 @@ export default defineContentScript({
                     gateForce: opts?.gateForce ?? false,
                   };
 
+                  const isChapterPrep = Boolean(
+                    chapterPrepManager?.isActive() &&
+                    chapterPrepManager?.isPreparingImage(originalSrc),
+                  );
+                  const hasPendingCompanion = Boolean(
+                    chapterPrepManager?.hasPendingCompanion(originalSrc),
+                  );
+
                   let resp: any;
-                  if (isGeminiBatchVision) {
-                    resp = await visionBatchCoordinator.requestTranslation({
-                      src,
-                      originalSrc,
-                      bboxes,
-                      seriesContext,
-                      config: messageConfig,
-                    });
-                  } else {
-                    resp = await browser.runtime.sendMessage({
-                      type: "TRANSLATE_IMAGE",
-                      data: {
-                        src: src,
-                        bboxes,
-                        seriesContext,
-                      },
-                      config: messageConfig,
-                    });
+                  try {
+                    if (isGeminiBatchVision && isChapterPrep) {
+                      resp = await visionBatchCoordinator.requestTranslation(
+                        {
+                          src,
+                          originalSrc,
+                          bboxes,
+                          seriesContext,
+                          config: messageConfig,
+                        },
+                        {
+                          allowBatch: true,
+                          hasPendingCompanion,
+                        },
+                      );
+                    } else {
+                      resp = await browser.runtime.sendMessage({
+                        type: "TRANSLATE_IMAGE",
+                        data: {
+                          src: src,
+                          bboxes,
+                          seriesContext,
+                        },
+                        config: messageConfig,
+                      });
+                    }
+                  } catch (err: any) {
+                    console.warn("LMT: Translation dispatch failed:", err?.message);
+                    resp = { error: err?.message ?? "Translation request failed" };
                   }
 
                   const duration = performance.now() - t0;
@@ -990,8 +1010,8 @@ export default defineContentScript({
     ctx.onInvalidated(() => autoTranslator.destroy());
 
     // ── Chapter Preparation Engine ──────────────────────────────────────
-    const chapterPrepManager = new ChapterPreparationManager(autoTranslator);
-    ctx.onInvalidated(() => chapterPrepManager.destroy());
+    chapterPrepManager = new ChapterPreparationManager(autoTranslator);
+    ctx.onInvalidated(() => chapterPrepManager?.destroy());
 
     const onChapterPrepStart = (e: Event) => {
       const detail = (e as CustomEvent<{ notify?: boolean }>).detail;

@@ -5,7 +5,7 @@ import {
 } from "@/lib/server/validator";
 import { VisionBatchCoordinator } from "@/lib/gemini/batch-coordinator";
 
-describe("Gemini Vision 2-Image Batching (M1.3)", () => {
+describe("Gemini Vision 2-Image Batching (M1.3.1)", () => {
   describe("validateBatchTranslationResult — Strict Schema & Mapping", () => {
     const expectedPages: ExpectedBatchPage[] = [
       { pageId: "page-1", expectedCount: 3 },
@@ -46,7 +46,7 @@ describe("Gemini Vision 2-Image Batching (M1.3)", () => {
       expect(validated.context?.dictionary).toBe("Mirai -> เรือมิไร");
     });
 
-    it("correctly preserves page mapping even if Gemini reorders pages in response array", () => {
+    it("correctly preserves page mapping when Gemini returns pages out of order", () => {
       const raw = {
         pages: [
           {
@@ -67,6 +67,27 @@ describe("Gemini Vision 2-Image Batching (M1.3)", () => {
       expect(validated.pages[0].translations).toEqual(["ข้อความ 1", "ข้อความ 2", "ข้อความ 3"]);
       expect(validated.pages[1].pageId).toBe("page-2");
       expect(validated.pages[1].translations).toEqual(["ข้อความ A", "ข้อความ B"]);
+    });
+
+    it("strictly rejects when a returned pageId does not match expected pageId (no positional fallback)", () => {
+      const rawWrongId = {
+        pages: [
+          {
+            pageId: "unrelated-page-xyz",
+            translations: ["1", "2", "3"],
+            sourceTexts: ["1", "2", "3"],
+          },
+          {
+            pageId: "page-2",
+            translations: ["A", "B"],
+            sourceTexts: ["A", "B"],
+          },
+        ],
+      };
+
+      expect(() =>
+        validateBatchTranslationResult(rawWrongId, expectedPages),
+      ).toThrow(/missing exact data for expected pageId 'page-1'/i);
     });
 
     it("strictly throws if returned translations count does not match expected box count", () => {
@@ -90,19 +111,67 @@ describe("Gemini Vision 2-Image Batching (M1.3)", () => {
       ).toThrow(/count mismatch on page 'page-1'/i);
     });
 
-    it("strictly throws if a pageId is missing and cannot be resolved", () => {
-      const rawMissingPage = {
+    it("strictly throws if sourceTexts length does not match expected count (no silent padding)", () => {
+      const rawWithMismatchedSource = {
         pages: [
           {
-            pageId: "wrong-id",
-            translations: ["1", "2", "3"],
+            pageId: "page-1",
+            translations: ["ข้อความ 1", "ข้อความ 2", "ข้อความ 3"],
+            sourceTexts: ["Text 1"], // Mismatched length!
+          },
+          {
+            pageId: "page-2",
+            translations: ["ข้อความ A", "ข้อความ B"],
+            sourceTexts: ["Text A", "Text B"],
           },
         ],
       };
 
       expect(() =>
-        validateBatchTranslationResult(rawMissingPage, expectedPages),
-      ).toThrow(/page count mismatch/i);
+        validateBatchTranslationResult(rawWithMismatchedSource, expectedPages),
+      ).toThrow(/sourceTexts count mismatch on page 'page-1'/i);
+    });
+
+    it("strictly rejects when dialogue exists in sourceText but translation is empty (incomplete dialogue)", () => {
+      const rawWithDroppedDialogue = {
+        pages: [
+          {
+            pageId: "page-1",
+            translations: ["ข้อความ 1", "", "ข้อความ 3"], // Box 2 translation is empty!
+            sourceTexts: ["Text 1", "Captain, incoming torpedo!", "Text 3"], // But source dialogue exists!
+          },
+          {
+            pageId: "page-2",
+            translations: ["ข้อความ A", "ข้อความ B"],
+            sourceTexts: ["Text A", "Text B"],
+          },
+        ],
+      };
+
+      expect(() =>
+        validateBatchTranslationResult(rawWithDroppedDialogue, expectedPages),
+      ).toThrow(/box 2 has source dialogue .* but translation is empty/i);
+    });
+
+    it("strictly rejects invalid null or undefined items in translations array", () => {
+      const rawWithNull = {
+        pages: [
+          {
+            pageId: "page-1",
+            translations: ["ข้อความ 1", null, "ข้อความ 3"],
+            sourceTexts: ["Text 1", "Text 2", "Text 3"],
+          },
+          {
+            pageId: "page-2",
+            translations: ["ข้อความ A", "ข้อความ B"],
+            sourceTexts: ["Text A", "Text B"],
+          },
+        ],
+      };
+
+      expect(() =>
+        validateBatchTranslationResult(rawWithNull as any, expectedPages),
+      ).toThrow(/invalid non-string item at index 1/i);
     });
 
     it("strictly throws if duplicate pageIds are returned", () => {
@@ -149,13 +218,16 @@ describe("Gemini Vision 2-Image Batching (M1.3)", () => {
       coordinator = new VisionBatchCoordinator();
     });
 
-    it("can instantiate and clear without error", () => {
+    it("tracks accounting stats accurately", () => {
       expect(coordinator).toBeDefined();
+      const stats = coordinator.getStats();
+      expect(stats.batchesDispatched).toBe(0);
+      expect(stats.singlesFlushed).toBe(0);
+      expect(stats.singlesDirect).toBe(0);
       coordinator.clear();
     });
 
     it("bypasses batching when allowBatch is false (direct single execution)", async () => {
-      // Mock global browser.runtime.sendMessage
       let sentType = "";
       (globalThis as any).browser = {
         runtime: {
@@ -181,6 +253,7 @@ describe("Gemini Vision 2-Image Batching (M1.3)", () => {
 
       expect(sentType).toBe("TRANSLATE_IMAGE");
       expect(res.translations).toEqual(["Thai 1"]);
+      expect(coordinator.getStats().singlesDirect).toBe(1);
     });
 
     it("batches 2 concurrent requests into 1 TRANSLATE_BATCH_IMAGES call", async () => {
@@ -242,19 +315,20 @@ describe("Gemini Vision 2-Image Batching (M1.3)", () => {
       expect(resB.translations).toEqual(["ข้อความ B1"]);
       expect(resB.batchInfo.isBatch).toBe(true);
       expect(resB.batchInfo.batchSize).toBe(2);
+
+      expect(coordinator.getStats().batchesDispatched).toBe(1);
     });
 
-    it("flushes odd page through TRANSLATE_IMAGE if companion does not arrive", async () => {
+    it("flushes immediately with 0ms delay when hasPendingCompanion is false", async () => {
       let singleCalls = 0;
-
       (globalThis as any).browser = {
         runtime: {
           sendMessage: async (msg: any) => {
             if (msg.type === "TRANSLATE_IMAGE") {
               singleCalls++;
               return {
-                translations: ["Single Thai"],
-                sourceTexts: ["Single Eng"],
+                translations: ["Immediate Single Thai"],
+                sourceTexts: ["Eng"],
               };
             }
             return { error: "Unexpected batch call" };
@@ -262,21 +336,25 @@ describe("Gemini Vision 2-Image Batching (M1.3)", () => {
         },
       };
 
-      // Only 1 page request queued (odd page at end of chapter)
-      const resPromise = coordinator.requestTranslation({
-        src: "odd-page.jpg",
-        originalSrc: "odd-page.jpg",
-        bboxes: [{ x1: 0, y1: 0, x2: 10, y2: 10, confidence: 1 }],
-        config: {},
-      });
+      const tStart = performance.now();
+      const res = await coordinator.requestTranslation(
+        {
+          src: "last-page.jpg",
+          originalSrc: "last-page.jpg",
+          bboxes: [{ x1: 0, y1: 0, x2: 10, y2: 10, confidence: 1 }],
+          config: {},
+        },
+        { allowBatch: true, hasPendingCompanion: false },
+      );
+      const elapsed = performance.now() - tStart;
 
-      // The coordinator timer will fire at ~600ms
-      const res = await resPromise;
       expect(singleCalls).toBe(1);
-      expect(res.translations).toEqual(["Single Thai"]);
+      expect(res.translations).toEqual(["Immediate Single Thai"]);
+      expect(elapsed).toBeLessThan(300); // Executed immediately without 800ms timer!
+      expect(coordinator.getStats().singlesFlushed).toBe(1);
     });
 
-    it("propagates failure to both pages if a batch request rejects", async () => {
+    it("returns error contract to both pages on failure so Overlay and Registry settle cleanly", async () => {
       (globalThis as any).browser = {
         runtime: {
           sendMessage: async (msg: any) => {
@@ -302,11 +380,9 @@ describe("Gemini Vision 2-Image Batching (M1.3)", () => {
         config: {},
       });
 
-      const [resA, resB] = await Promise.allSettled([pA, pB]);
-      expect(resA.status).toBe("rejected");
-      expect((resA as PromiseRejectedResult).reason.message).toContain("Quota Exceeded");
-      expect(resB.status).toBe("rejected");
-      expect((resB as PromiseRejectedResult).reason.message).toContain("Quota Exceeded");
+      const [resA, resB] = await Promise.all([pA, pB]);
+      expect(resA.error).toContain("Quota Exceeded");
+      expect(resB.error).toContain("Quota Exceeded");
     });
   });
 });
