@@ -22,6 +22,7 @@
     geminiKey = $bindable(""),
     geminiModel = $bindable(DefaultConfig.geminiModels[0].id),
     geminiWorkflow = $bindable(DefaultConfig.geminiWorkflow),
+    geminiBatchVision = $bindable(DefaultConfig.geminiBatchVision),
     cachedLlms = $bindable([]),
   }: {
     currentMode?: string;
@@ -34,7 +35,8 @@
     serverApiKey: string;
     geminiKey: string;
     geminiModel: string;
-    geminiWorkflow?: "vision" | "text";
+    geminiWorkflow?: "vision" | "text" | "vision-batch";
+    geminiBatchVision?: boolean;
     cachedLlms?: string[];
   } = $props();
 
@@ -393,6 +395,41 @@
         </button>
       </div>
     </div>
+
+    {#if geminiWorkflow !== "text"}
+      <div class="pt-2 border-t border-[var(--border-faint)] space-y-1.5">
+        <div class="flex justify-between items-center">
+          <span class="text-[10px] font-bold uppercase tracking-widest text-[var(--text-dim)]">
+            Vision Batching (M1.3)
+          </span>
+          <span class="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[var(--bg-void)] border border-[var(--border-faint)] {geminiBatchVision ? 'text-[var(--accent-emerald)]' : 'text-[var(--text-dim)]'}">
+            {geminiBatchVision ? "2 Pages / Request" : "1 Page (Default)"}
+          </span>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onclick={() => (geminiBatchVision = false)}
+            class="px-2.5 py-1.5 rounded-lg text-xs font-semibold tracking-wide border cursor-pointer transition-all flex items-center justify-center
+            {!geminiBatchVision
+              ? 'bg-[var(--accent-emerald-soft)] border-[var(--accent-emerald)]/50 text-[var(--accent-emerald)] shadow-sm'
+              : 'bg-[var(--bg-void)] border-[var(--border-faint)] text-[var(--text-dim)] hover:text-[var(--text-primary)] hover:border-[var(--border-line)]'}"
+          >
+            <span>Single Page</span>
+          </button>
+          <button
+            type="button"
+            onclick={() => (geminiBatchVision = true)}
+            class="px-2.5 py-1.5 rounded-lg text-xs font-semibold tracking-wide border cursor-pointer transition-all flex items-center justify-center
+            {geminiBatchVision
+              ? 'bg-[var(--accent-cyan-soft)] border-[var(--accent-cyan)]/50 text-[var(--accent-cyan)] shadow-sm'
+              : 'bg-[var(--bg-void)] border-[var(--border-faint)] text-[var(--text-dim)] hover:text-[var(--text-primary)] hover:border-[var(--border-line)]'}"
+          >
+            <span>2-Page Batch (M1.3)</span>
+          </button>
+        </div>
+      </div>
+    {/if}
 
     <div class="pt-2.5 border-t border-[var(--border-faint)]">
       <div class="flex justify-between items-center mb-1.5">

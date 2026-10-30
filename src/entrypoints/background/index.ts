@@ -495,9 +495,13 @@ export default defineBackground(() => {
     // for a slot BEFORE the execution timeout starts, so queue wait never
     // consumes the per-job budget.
     if (
-      ["DETECT_BBOX", "TRANSLATE_IMAGE", "MAKE_SITE_RULE_AI", "INPAINT_IMAGE"].includes(
-        msg.type,
-      )
+      [
+        "DETECT_BBOX",
+        "TRANSLATE_IMAGE",
+        "TRANSLATE_BATCH_IMAGES",
+        "MAKE_SITE_RULE_AI",
+        "INPAINT_IMAGE",
+      ].includes(msg.type)
     ) {
       // Quality (LaMa) runs on wasm CPU (~30s+ per 512px tile), so a Quality
       // inpaint over N regions needs a per-region budget, not a flat page budget.
@@ -512,6 +516,8 @@ export default defineBackground(() => {
           ? Math.max(300_000, inpaintBoxes * 60_000)
           : isLocalTranslate
             ? 480_000
+          : msg.type === "TRANSLATE_BATCH_IMAGES"
+            ? 240_000
           : msg.type === "TRANSLATE_IMAGE" || msg.type === "INPAINT_IMAGE"
             ? 180_000
             : 90_000;

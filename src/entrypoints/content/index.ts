@@ -3,6 +3,7 @@ import Sidebar from "@/lib/components/Sidebar.svelte";
 import FloatingTrigger from "@/lib/components/FloatingTrigger.svelte";
 import { AutoTranslateOrchestrator } from "./auto-translate";
 import { ChapterPreparationManager } from "./chapter-prep";
+import { VisionBatchCoordinator } from "@/lib/gemini/batch-coordinator";
 import * as Registry from "./translation-registry";
 import { mount, unmount } from "svelte";
 import { ShadowRootContentScriptUi } from "#imports";
@@ -177,7 +178,7 @@ export default defineContentScript({
       string,
       {
         mode: string;
-        workflow?: "vision" | "text";
+        workflow?: "vision" | "text" | "vision-batch";
         duration: number;
         ocrMs?: number;
         translateMs?: number;
@@ -186,8 +187,15 @@ export default defineContentScript({
         ocrBoxesTotal?: number;
         ocrBoxesRecognized?: number;
         ocrCompleteness?: number;
+        batchInfo?: {
+          batchSize: number;
+          isBatch: boolean;
+          batchDurationMs?: number;
+          companionSrc?: string;
+        };
       }
     >();
+    const visionBatchCoordinator = new VisionBatchCoordinator();
     const overlays = new Map<
       string,
       { ui: ShadowRootContentScriptUi<any>; wrapper: HTMLElement }
@@ -497,6 +505,7 @@ export default defineContentScript({
                     "local:gemini-key",
                     "sync:gemini-model",
                     "sync:gemini-workflow",
+                    "sync:gemini-batch-vision",
                     "sync:ocr-min-confidence",
                     "sync:ocr-engine",
                     "sync:llm-model",
@@ -512,39 +521,58 @@ export default defineContentScript({
                     runtimeItems.map((i) => [i.key, i.value]),
                   );
 
-                  const resp = await browser.runtime.sendMessage({
-                    type: "TRANSLATE_IMAGE",
-                    data: {
-                      src: src,
+                  const curGeminiWorkflow =
+                    (runtime["sync:gemini-workflow"] as "vision" | "text" | undefined) ??
+                    DefaultConfig.geminiWorkflow;
+                  const isGeminiBatchVision =
+                    curMode === "gemini" &&
+                    Boolean(runtime["sync:gemini-batch-vision"] ?? DefaultConfig.geminiBatchVision) &&
+                    curGeminiWorkflow !== "text";
+
+                  const messageConfig = {
+                    currentMode: curMode,
+                    targetLang: tgtLang,
+                    sourceLang: srcLang,
+                    geminiKey: runtime["local:gemini-key"] as string | undefined,
+                    geminiModel: runtime["sync:gemini-model"] as string | undefined,
+                    geminiWorkflow: curGeminiWorkflow,
+                    ocrMinConfidence: runtime["sync:ocr-min-confidence"] as number | undefined,
+                    ocrEngine:
+                      (runtime["sync:ocr-engine"] as string | undefined) ??
+                      DefaultConfig.ocrEngine,
+                    llmModel: runtime["sync:llm-model"] as string | undefined,
+                    llmTemperature: runtime["sync:llm-temperature"] as number | undefined,
+                    serverHost: runtime["local:server-host"] as string | undefined,
+                    serverSchema: runtime["local:server-schema"] as string | undefined,
+                    serverModel: runtime["local:server-model"] as string | undefined,
+                    useServerApiKey: runtime["local:use-server-api-key"] as boolean | undefined,
+                    serverApiKey: runtime["local:server-api-key"] as string | undefined,
+                    scriptGate:
+                      (runtime["sync:script-gate"] as boolean | undefined) ??
+                      DefaultConfig.scriptGate,
+                    gateForce: opts?.gateForce ?? false,
+                  };
+
+                  let resp: any;
+                  if (isGeminiBatchVision) {
+                    resp = await visionBatchCoordinator.requestTranslation({
+                      src,
+                      originalSrc,
                       bboxes,
                       seriesContext,
-                    },
-                    config: {
-                      currentMode: curMode,
-                      targetLang: tgtLang,
-                      sourceLang: srcLang,
-                      geminiKey: runtime["local:gemini-key"] as string | undefined,
-                      geminiModel: runtime["sync:gemini-model"] as string | undefined,
-                      geminiWorkflow:
-                        (runtime["sync:gemini-workflow"] as "vision" | "text" | undefined) ??
-                        DefaultConfig.geminiWorkflow,
-                      ocrMinConfidence: runtime["sync:ocr-min-confidence"] as number | undefined,
-                      ocrEngine:
-                        (runtime["sync:ocr-engine"] as string | undefined) ??
-                        DefaultConfig.ocrEngine,
-                      llmModel: runtime["sync:llm-model"] as string | undefined,
-                      llmTemperature: runtime["sync:llm-temperature"] as number | undefined,
-                      serverHost: runtime["local:server-host"] as string | undefined,
-                      serverSchema: runtime["local:server-schema"] as string | undefined,
-                      serverModel: runtime["local:server-model"] as string | undefined,
-                      useServerApiKey: runtime["local:use-server-api-key"] as boolean | undefined,
-                      serverApiKey: runtime["local:server-api-key"] as string | undefined,
-                      scriptGate:
-                        (runtime["sync:script-gate"] as boolean | undefined) ??
-                        DefaultConfig.scriptGate,
-                      gateForce: opts?.gateForce ?? false,
-                    },
-                  });
+                      config: messageConfig,
+                    });
+                  } else {
+                    resp = await browser.runtime.sendMessage({
+                      type: "TRANSLATE_IMAGE",
+                      data: {
+                        src: src,
+                        bboxes,
+                        seriesContext,
+                      },
+                      config: messageConfig,
+                    });
+                  }
 
                   const duration = performance.now() - t0;
 
@@ -605,6 +633,7 @@ export default defineContentScript({
                     ocrBoxesTotal: resp?.ocrBoxesTotal,
                     ocrBoxesRecognized: resp?.ocrBoxesRecognized,
                     ocrCompleteness: resp?.ocrCompleteness,
+                    batchInfo: resp?.batchInfo,
                     version: debugCtx.version,
                     device: debugCtx.device,
                     backend: curMode === "webgpu" ? backend : undefined,
@@ -653,6 +682,7 @@ export default defineContentScript({
                     ocrBoxesTotal: resp?.ocrBoxesTotal,
                     ocrBoxesRecognized: resp?.ocrBoxesRecognized,
                     ocrCompleteness: resp?.ocrCompleteness,
+                    batchInfo: resp?.batchInfo,
                   });
 
                   const cacheKey = await translationKey();
@@ -809,8 +839,11 @@ export default defineContentScript({
                     info?.ocrBoxesTotal !== undefined
                       ? ` completeness=${info.ocrBoxesRecognized ?? 0}/${info.ocrBoxesTotal}(${info.ocrCompleteness ?? 0}%)`
                       : "";
+                  const batchStr = info?.batchInfo?.isBatch
+                    ? ` batch=2(${info.batchInfo.batchDurationMs}ms)`
+                    : "";
                   console.log(
-                    `[LMT Timing] workflow=${info?.mode === "gemini" ? (info.workflow ?? "vision") : (info?.mode ?? "unknown")}${completenessStr} ` +
+                    `[LMT Timing] workflow=${info?.mode === "gemini" ? (info.workflow ?? "vision") : (info?.mode ?? "unknown")}${completenessStr}${batchStr} ` +
                     `total=${totalPipelineMs.toFixed(0)}ms ` +
                     `[detect=${lastDetectMs ? lastDetectMs.toFixed(0) : "-"}ms, ` +
                     `ocr=${info?.ocrMs !== undefined ? info.ocrMs.toFixed(0) : "-"}ms, ` +

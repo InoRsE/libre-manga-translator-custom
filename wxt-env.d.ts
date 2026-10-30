@@ -71,12 +71,18 @@ interface DebugEntry {
   timestamp: number;
   success: boolean;
   mode: string;
-  geminiWorkflow?: "vision" | "text";
+  geminiWorkflow?: "vision" | "text" | "vision-batch";
   fallback?: boolean;
   fallbackReason?: string;
   ocrBoxesTotal?: number;
   ocrBoxesRecognized?: number;
   ocrCompleteness?: number;
+  batchInfo?: {
+    batchSize: number;
+    isBatch: boolean;
+    batchDurationMs?: number;
+    companionSrc?: string;
+  };
   version?: string;
   device?: string;
   backend?: "webgpu" | "wasm";

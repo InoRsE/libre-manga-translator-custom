@@ -66,7 +66,8 @@
   // Backend / AI Keys
   let geminiKey = $state("");
   let geminiModel = $state(DefaultConfig.geminiModels[0].id);
-  let geminiWorkflow = $state<"vision" | "text">(DefaultConfig.geminiWorkflow);
+  let geminiWorkflow = $state<"vision" | "text" | "vision-batch">(DefaultConfig.geminiWorkflow);
+  let geminiBatchVision = $state(DefaultConfig.geminiBatchVision);
   let llmModel = $state(DefaultConfig.llmModels[0].id);
   let llmTemperature = $state(DefaultConfig.llmTemperature);
   let serverHost = $state(DefaultConfig.serverHost);
@@ -219,6 +220,7 @@
       geminiKey = saved["local:gemini-key"] ?? geminiKey;
       geminiModel = saved["sync:gemini-model"] ?? geminiModel;
       geminiWorkflow = saved["sync:gemini-workflow"] ?? geminiWorkflow;
+      geminiBatchVision = saved["sync:gemini-batch-vision"] ?? geminiBatchVision;
       detectionModel = normalizeDetectionModel(saved["sync:detection-model"] ?? detectionModel);
       ocrMinConfidence = saved["sync:ocr-min-confidence"] ?? ocrMinConfidence;
       ocrEngine = saved["sync:ocr-engine"] ?? ocrEngine;
@@ -261,6 +263,7 @@
         { key: "local:gemini-key", value: geminiKey },
         { key: "sync:gemini-model", value: geminiModel },
         { key: "sync:gemini-workflow", value: geminiWorkflow },
+        { key: "sync:gemini-batch-vision", value: geminiBatchVision },
         { key: "sync:source-lang", value: sourceLang },
         { key: "sync:target-lang", value: targetLang },
         { key: "sync:detection-model", value: detectionModel },
@@ -287,7 +290,7 @@
     if (loadingSettings) return;
     [
       detectionMinConfidence, skipBboxRefining, autoTranslate, autoTranslateConcurrency,
-      ocrMinConfidence, ocrEngine, scriptGate, geminiKey, geminiModel, geminiWorkflow, sourceLang, targetLang,
+      ocrMinConfidence, ocrEngine, scriptGate, geminiKey, geminiModel, geminiWorkflow, geminiBatchVision, sourceLang, targetLang,
       detectionModel, currentMode, seriesContext.seriesName, seriesContext.summary, seriesContext.dictionary,
       textFont, customFonts.length, inpaintMethod, alwaysInpaint, llmModel, llmTemperature, serverHost, serverSchema,
       serverModel, useServerApiKey, serverApiKey, customRules.length,
@@ -837,6 +840,7 @@
             bind:geminiKey
             bind:geminiModel
             bind:geminiWorkflow
+            bind:geminiBatchVision
             bind:cachedLlms
           />
         </div>

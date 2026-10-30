@@ -1,6 +1,7 @@
 import { UNKNOWN_DETECTION_MODEL_MESSAGE, detectTextBubble, releaseDetection } from "@/lib/detections/main";
 import {
   makeSiteRuleWithGemini,
+  translateBatchWithGemini,
   translateTextWithGemini,
   translateWithGemini,
 } from "@/lib/gemini/main";
@@ -301,6 +302,42 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
         });
       })().catch((err) => sendResponse({ error: err.message }));
     }
+
+    return true;
+  }
+
+  if (msg.type === "OFFSCREEN_TRANSLATE_BATCH_IMAGES") {
+    const {
+      targetLang,
+      sourceLang,
+      geminiKey,
+      geminiModel,
+      llmTemperature,
+    } = msg.config;
+    const { pages, seriesContext } = msg.data;
+
+    (async () => {
+      await yieldToMain();
+      const tTrans = performance.now();
+      const res = await translateBatchWithGemini(
+        pages,
+        geminiKey,
+        targetLang,
+        sourceLang,
+        seriesContext,
+        geminiModel,
+        llmTemperature,
+      );
+      const transDuration = performance.now() - tTrans;
+
+      sendResponse({
+        ...res,
+        timing: { translate: transDuration },
+        backend: await detectBackend(),
+        geminiWorkflow: "vision-batch",
+        fallback: false,
+      });
+    })().catch((err) => sendResponse({ error: err.message }));
 
     return true;
   }

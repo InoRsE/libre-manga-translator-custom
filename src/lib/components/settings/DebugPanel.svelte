@@ -314,7 +314,15 @@
                 <div class="flex items-center gap-1">
                   <span class="text-[var(--text-dim)] uppercase">Flow:</span>
                   <span class="font-bold {log.geminiWorkflow === 'text' ? 'text-[var(--accent-cyan)]' : 'text-[var(--accent-emerald)]'}">
-                    {log.geminiWorkflow === 'text' ? 'Fast Text' : 'Vision'}
+                    {log.geminiWorkflow === 'text' ? 'Fast Text' : log.geminiWorkflow === 'vision-batch' ? 'Vision Batch' : 'Vision'}
+                  </span>
+                </div>
+              {/if}
+              {#if log.batchInfo?.isBatch}
+                <div class="flex items-center gap-1">
+                  <span class="text-[var(--text-dim)] uppercase">Batch:</span>
+                  <span class="font-bold text-[var(--accent-cyan)]">
+                    {log.batchInfo.batchSize} Pages ({log.batchInfo.batchDurationMs ? `${(log.batchInfo.batchDurationMs / 1000).toFixed(1)}s` : 'OK'})
                   </span>
                 </div>
               {/if}

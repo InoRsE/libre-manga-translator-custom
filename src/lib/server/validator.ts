@@ -132,3 +132,130 @@ export function validateTranslationResult(
 
   return { translations, sourceTexts, context };
 }
+
+export interface ExpectedBatchPage {
+  pageId: string;
+  expectedCount: number;
+}
+
+export interface ValidatedBatchPageResult {
+  pageId: string;
+  translations: string[];
+  sourceTexts: string[];
+}
+
+export interface ValidatedBatchResult {
+  pages: ValidatedBatchPageResult[];
+  context?: {
+    summary: string;
+    dictionary: string;
+  };
+}
+
+/**
+ * Validates a multi-page batch translation response from Gemini Vision.
+ * Strict rules (M1.3 Requirements):
+ * 1. Must contain a 'pages' array matching the expected page count.
+ * 2. Every page must strictly match its expected pageId and box count.
+ * 3. Never silently fill missing translations (throws on count mismatch).
+ * 4. Never confuse or swap dialogue between pages.
+ */
+export function validateBatchTranslationResult(
+  raw: unknown,
+  expectedPages: ExpectedBatchPage[],
+): ValidatedBatchResult {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Batch translation response is not a valid JSON object");
+  }
+
+  const obj = raw as Record<string, any>;
+  const pagesRaw = obj.pages;
+
+  if (!Array.isArray(pagesRaw)) {
+    throw new Error("Batch translation response missing 'pages' array");
+  }
+
+  if (pagesRaw.length !== expectedPages.length) {
+    throw new Error(
+      `Batch translation page count mismatch: received ${pagesRaw.length} pages, expected ${expectedPages.length}`,
+    );
+  }
+
+  // Prevent duplicate pageIds in response
+  const seenIds = new Set<string>();
+  const validatedPages: ValidatedBatchPageResult[] = [];
+
+  for (let i = 0; i < expectedPages.length; i++) {
+    const expected = expectedPages[i];
+
+    // Find page data matching pageId (or fallback to exact index order if pageId is missing/mangled)
+    let pageData = pagesRaw.find(
+      (p) => p && String(p.pageId).trim() === String(expected.pageId).trim(),
+    );
+
+    if (!pageData) {
+      // If exactly expectedPages.length items exist and index i has translations, match by positional order
+      if (pagesRaw[i] && Array.isArray(pagesRaw[i].translations)) {
+        pageData = pagesRaw[i];
+      } else {
+        throw new Error(
+          `Batch translation response missing data for page '${expected.pageId}'`,
+        );
+      }
+    }
+
+    const effectiveId = String(pageData.pageId ?? expected.pageId).trim();
+    if (seenIds.has(effectiveId)) {
+      throw new Error(`Batch translation returned duplicate pageId '${effectiveId}'`);
+    }
+    seenIds.add(effectiveId);
+
+    if (!Array.isArray(pageData.translations)) {
+      throw new Error(
+        `Batch translation for page '${expected.pageId}' missing 'translations' array`,
+      );
+    }
+
+    // STRICT CHECK: Box count must match exactly
+    if (pageData.translations.length !== expected.expectedCount) {
+      throw new Error(
+        `Batch translation box count mismatch on page '${expected.pageId}': received ${pageData.translations.length}, expected ${expected.expectedCount}`,
+      );
+    }
+
+    const translations = pageData.translations.map((item: any) => {
+      if (typeof item === "string") return item;
+      if (item === null || item === undefined) return "";
+      return String(item);
+    });
+
+    let sourceTexts: string[] = [];
+    if (Array.isArray(pageData.sourceTexts)) {
+      sourceTexts = pageData.sourceTexts.map((item: any) =>
+        typeof item === "string" ? item : String(item ?? ""),
+      );
+      while (sourceTexts.length < expected.expectedCount) sourceTexts.push("");
+      if (sourceTexts.length > expected.expectedCount) {
+        sourceTexts.length = expected.expectedCount;
+      }
+    } else {
+      sourceTexts = new Array(expected.expectedCount).fill("");
+    }
+
+    validatedPages.push({
+      pageId: expected.pageId,
+      translations,
+      sourceTexts,
+    });
+  }
+
+  let context: { summary: string; dictionary: string } | undefined = undefined;
+  if (obj.context && typeof obj.context === "object") {
+    context = {
+      summary: typeof obj.context.summary === "string" ? obj.context.summary : "",
+      dictionary: typeof obj.context.dictionary === "string" ? obj.context.dictionary : "",
+    };
+  }
+
+  return { pages: validatedPages, context };
+}
