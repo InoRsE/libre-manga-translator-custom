@@ -440,54 +440,100 @@ export default defineBackground(() => {
           saveAs: false, // Zero confirmation prompts
         });
 
-        // Observe actual browser download completion or interruption
-        if (downloadsApi.onChanged?.addListener) {
-          return new Promise((resolve) => {
-            const timeoutTimer = setTimeout(() => {
-              if (downloadsApi.onChanged?.removeListener) {
+        // M1.4.2 REPAIR 4: Observe actual browser download completion or interruption
+        // with status reconciliation to avoid missing rapid synchronous completions on fast SSDs.
+        return new Promise((resolve) => {
+          let settled = false;
+
+          const cleanupAndResolve = (result: any) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutTimer);
+            clearInterval(pollInterval);
+            if (downloadsApi.onChanged?.removeListener) {
+              try {
                 downloadsApi.onChanged.removeListener(listener);
+              } catch {}
+            }
+            resolve(result);
+          };
+
+          const timeoutTimer = setTimeout(() => {
+            cleanupAndResolve({
+              success: false,
+              downloadState: "download_failed",
+              downloadId,
+              error: "Browser download timed out after 120s",
+            });
+          }, 120000);
+
+          const listener = (delta: any) => {
+            if (delta.id === downloadId) {
+              if (delta.state?.current === "complete") {
+                cleanupAndResolve({
+                  success: true,
+                  downloadState: "download_completed",
+                  downloadId,
+                });
+              } else if (
+                delta.state?.current === "interrupted" ||
+                delta.error?.current
+              ) {
+                cleanupAndResolve({
+                  success: false,
+                  downloadState: "download_failed",
+                  downloadId,
+                  error: delta.error?.current || "Download interrupted",
+                });
               }
-              resolve({
+            }
+          };
+
+          if (downloadsApi.onChanged?.addListener) {
+            downloadsApi.onChanged.addListener(listener);
+          }
+
+          const handleSearchItems = (items: any[]) => {
+            const item = Array.isArray(items) ? items[0] : null;
+            if (!item || settled) return;
+            if (item.state === "complete") {
+              cleanupAndResolve({
+                success: true,
+                downloadState: "download_completed",
+                downloadId,
+              });
+            } else if (item.state === "interrupted" || item.error) {
+              cleanupAndResolve({
                 success: false,
                 downloadState: "download_failed",
                 downloadId,
-                error: "Browser download timed out after 120s",
+                error: item.error || "Download interrupted",
               });
-            }, 120000);
+            }
+          };
 
-            const listener = (delta: any) => {
-              if (delta.id === downloadId) {
-                if (delta.state?.current === "complete") {
-                  clearTimeout(timeoutTimer);
-                  if (downloadsApi.onChanged?.removeListener) {
-                    downloadsApi.onChanged.removeListener(listener);
-                  }
-                  resolve({
-                    success: true,
-                    downloadState: "download_completed",
-                    downloadId,
-                  });
-                } else if (
-                  delta.state?.current === "interrupted" ||
-                  delta.error?.current
-                ) {
-                  clearTimeout(timeoutTimer);
-                  if (downloadsApi.onChanged?.removeListener) {
-                    downloadsApi.onChanged.removeListener(listener);
-                  }
-                  resolve({
-                    success: false,
-                    downloadState: "download_failed",
-                    downloadId,
-                    error: delta.error?.current || "Download interrupted",
-                  });
+          const reconcile = () => {
+            if (settled) return;
+            if (typeof downloadsApi.search === "function") {
+              try {
+                const searchRes = downloadsApi.search({ id: downloadId });
+                if (searchRes && typeof searchRes.then === "function") {
+                  searchRes
+                    .then((items: any[]) => handleSearchItems(items))
+                    .catch(() => {});
+                } else {
+                  downloadsApi.search({ id: downloadId }, (items: any[]) =>
+                    handleSearchItems(items),
+                  );
                 }
-              }
-            };
+              } catch {}
+            }
+          };
 
-            downloadsApi.onChanged.addListener(listener);
-          });
-        }
+          // Reconcile immediately and periodically every 250ms
+          setTimeout(reconcile, 0);
+          const pollInterval = setInterval(reconcile, 250);
+        });
 
         // Fallback for testing environments where onChanged is not simulated
         return {

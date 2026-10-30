@@ -380,12 +380,13 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
       return;
     }
     mode = "results";
-    Registry.markDone(originalSrc);
-    Registry.setRenderedResult(originalSrc, {
+    const freshResult: Registry.RenderedPageResult = {
       renderedUrl: translatedUrl,
       translations: $state.snapshot(translations),
       sourceTexts: $state.snapshot(sourceTexts),
-    });
+    };
+    Registry.setRenderedResult(originalSrc, freshResult);
+    Registry.markDone(originalSrc, undefined, freshResult);
   }
 
   async function handleConfirm() {
@@ -705,12 +706,13 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
       translations = initialCache.translations ?? [];
       sourceTexts = initialCache.sourceTexts ?? [];
       cleanedUrl = initialCache.cleanedSrc ?? "";
-      Registry.markDone(originalSrc);
-      Registry.setRenderedResult(originalSrc, {
+      const cachedResult: Registry.RenderedPageResult = {
         renderedUrl: translatedUrl,
         translations: initialCache.translations ?? [],
         sourceTexts: initialCache.sourceTexts ?? [],
-      });
+      };
+      Registry.setRenderedResult(originalSrc, cachedResult);
+      Registry.markDone(originalSrc, undefined, cachedResult);
     } else {
       const [skipRefining, autoTranslate, currentMode] = await Promise.all([
         storage.getItem<boolean>("sync:skip-bbox-refining"),
@@ -730,12 +732,13 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
           // Settle as done so chapter preparation and auto-translate can proceed.
           mode = "results";
           translatedUrl = rawImageUrl ?? "";
-          Registry.markDone(originalSrc);
-          Registry.setRenderedResult(originalSrc, {
+          const zeroResult: Registry.RenderedPageResult = {
             renderedUrl: translatedUrl,
             translations: [],
             sourceTexts: [],
-          });
+          };
+          Registry.setRenderedResult(originalSrc, zeroResult);
+          Registry.markDone(originalSrc, undefined, zeroResult);
         }
       } else {
         mode = "refining";

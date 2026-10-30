@@ -221,7 +221,11 @@ export default defineContentScript({
     });
 
     async function startTranslationPipeline(imgElement: MangaTargetElement) {
-      if (!imgElement || !document.body.contains(imgElement)) return;
+      if (!imgElement || !document.body.contains(imgElement)) {
+        const raw = imgElement ? getElementSrc(imgElement) : "";
+        if (raw) Registry.markIdle(raw);
+        return;
+      }
       const rawSrc = getElementSrc(imgElement);
       if (!rawSrc) return;
       const clicked = srcKey(rawSrc);
@@ -263,7 +267,10 @@ export default defineContentScript({
       // page, not-yet-loaded). Geometry captured now would freeze the wrapper
       // at 0×0. Nothing is claimed yet, so a plain return is safe — the queue
       // releases the slot and rescan retries when the page is visible.
-      if (!(await waitForLaidOutImage(imgElement))) return;
+      if (!(await waitForLaidOutImage(imgElement))) {
+        Registry.markIdle(originalSrc);
+        return;
+      }
 
       // Claim the pipeline SYNCHRONOUSLY (before the first await below)
       // so queue slot accounting sees pending on the same tick the queue
@@ -1028,13 +1035,19 @@ export default defineContentScript({
       );
     };
 
+    const onChapterPrepDiagnose = () => {
+      chapterPrepManager.runDiagnostic();
+    };
+
     document.addEventListener("lmt:chapter-prep-start", onChapterPrepStart);
     document.addEventListener("lmt:chapter-prep-stop", onChapterPrepStop);
     document.addEventListener("lmt:chapter-prep-get", onChapterPrepGet);
+    document.addEventListener("lmt:chapter-prep-diagnose", onChapterPrepDiagnose);
     ctx.onInvalidated(() => {
       document.removeEventListener("lmt:chapter-prep-start", onChapterPrepStart);
       document.removeEventListener("lmt:chapter-prep-stop", onChapterPrepStop);
       document.removeEventListener("lmt:chapter-prep-get", onChapterPrepGet);
+      document.removeEventListener("lmt:chapter-prep-diagnose", onChapterPrepDiagnose);
     });
 
     // ── Floating Hover Trigger ──────────────────────────────────────────

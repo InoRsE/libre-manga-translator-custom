@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { BookOpen, CheckCircle, AlertTriangle, XCircle, Loader2, Square, Sparkles, Bell } from "lucide-svelte";
-  import type { ChapterPrepProgress } from "@/entrypoints/content/chapter-prep";
+  import { BookOpen, CheckCircle, AlertTriangle, XCircle, Loader2, Square, Sparkles, Bell, Wrench } from "lucide-svelte";
+  import type { ChapterPrepProgress, ChapterDiagnosticResult } from "@/entrypoints/content/chapter-prep";
   import { onMount, onDestroy } from "svelte";
 
   let progress = $state<ChapterPrepProgress>({
@@ -13,6 +13,9 @@
     message: "Pre-translate all chapter pages for uninterrupted reading.",
   });
 
+  let diagnostic = $state<ChapterDiagnosticResult | null>(null);
+  let showDiagnosticDetails = $state(false);
+  let isDiagnosing = $state(false);
   let notifyOnComplete = $state(true);
 
   function handleProgressEvent(e: Event) {
@@ -22,14 +25,25 @@
     }
   }
 
+  function handleDiagnosticEvent(e: Event) {
+    const detail = (e as CustomEvent<ChapterDiagnosticResult>).detail;
+    if (detail) {
+      diagnostic = detail;
+      isDiagnosing = false;
+      showDiagnosticDetails = true;
+    }
+  }
+
   onMount(() => {
     document.addEventListener("lmt:chapter-prep-progress", handleProgressEvent);
+    document.addEventListener("lmt:chapter-prep-diagnostic-result", handleDiagnosticEvent);
     // Request current progress from manager
     document.dispatchEvent(new CustomEvent("lmt:chapter-prep-get"));
   });
 
   onDestroy(() => {
     document.removeEventListener("lmt:chapter-prep-progress", handleProgressEvent);
+    document.removeEventListener("lmt:chapter-prep-diagnostic-result", handleDiagnosticEvent);
   });
 
   function startPreparation() {
@@ -42,6 +56,11 @@
 
   function stopPreparation() {
     document.dispatchEvent(new CustomEvent("lmt:chapter-prep-stop"));
+  }
+
+  function runDiagnostic() {
+    isDiagnosing = true;
+    document.dispatchEvent(new CustomEvent("lmt:chapter-prep-diagnose"));
   }
 
   let percent = $derived(
@@ -175,23 +194,86 @@
       </span>
     </label>
 
-    {#if progress.status === "preparing"}
+    <div class="flex items-center gap-1.5">
       <button
         type="button"
-        onclick={stopPreparation}
-        class="px-3 py-1.5 text-xs font-semibold rounded-md border border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+        onclick={runDiagnostic}
+        disabled={isDiagnosing || progress.status === "preparing"}
+        title="Analyze chapter page order and virtualized DOM state without calling Gemini API"
+        class="px-2.5 py-1.5 text-xs font-medium rounded-md border border-[var(--border-faint)] bg-[var(--bg-void)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--text-dim)] transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
       >
-        <Square size={11} /> Stop
+        <Wrench size={11} class={isDiagnosing ? "animate-spin" : ""} />
+        {isDiagnosing ? "Analyzing…" : "Diagnostic"}
       </button>
-    {:else}
-      <button
-        type="button"
-        onclick={startPreparation}
-        class="px-3.5 py-1.5 text-xs font-semibold rounded-md border border-[var(--accent-cyan)]/40 bg-[var(--accent-cyan-soft)] text-[var(--accent-cyan)] hover:bg-[var(--accent-cyan)]/20 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm hover:scale-[1.02] active:scale-[0.98]"
-      >
-        <Sparkles size={12} />
-        {progress.status === "ready" ? "Re-prepare Chapter" : "Prepare Chapter"}
-      </button>
-    {/if}
+
+      {#if progress.status === "preparing"}
+        <button
+          type="button"
+          onclick={stopPreparation}
+          class="px-3 py-1.5 text-xs font-semibold rounded-md border border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+        >
+          <Square size={11} /> Stop
+        </button>
+      {:else}
+        <button
+          type="button"
+          onclick={startPreparation}
+          class="px-3.5 py-1.5 text-xs font-semibold rounded-md border border-[var(--accent-cyan)]/40 bg-[var(--accent-cyan-soft)] text-[var(--accent-cyan)] hover:bg-[var(--accent-cyan)]/20 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm hover:scale-[1.02] active:scale-[0.98]"
+        >
+          <Sparkles size={12} />
+          {progress.status === "ready" ? "Re-prepare Chapter" : "Prepare Chapter"}
+        </button>
+      {/if}
+    </div>
   </div>
+
+  <!-- Diagnostic Readout Panel -->
+  {#if diagnostic && showDiagnosticDetails}
+    <div class="mt-1 pt-2 border-t border-[var(--border-faint)] flex flex-col gap-2 text-[10px]">
+      <div class="flex items-center justify-between">
+        <span class="font-semibold text-[var(--text-primary)] flex items-center gap-1">
+          <Wrench size={11} class="text-[var(--accent-cyan)]" /> Chapter Diagnostic (0 API)
+        </span>
+        <button
+          type="button"
+          onclick={() => (showDiagnosticDetails = false)}
+          class="text-[var(--text-dim)] hover:text-[var(--text-muted)] cursor-pointer"
+        >
+          Close
+        </button>
+      </div>
+
+      <div class="p-2 rounded bg-[var(--bg-void)] border border-[var(--border-faint)] flex flex-col gap-1.5">
+        <div class="flex items-center justify-between font-mono">
+          <span class="text-[var(--text-dim)]">Verdict:</span>
+          <span
+            class="font-semibold px-1.5 py-0.5 rounded text-[9px] {diagnostic.verdict === 'ELIGIBLE_FOR_PROCESSING'
+              ? 'bg-emerald-500/20 text-emerald-400'
+              : diagnostic.verdict === 'DETACHED_ASSETS'
+                ? 'bg-amber-500/20 text-amber-400'
+                : 'bg-rose-500/20 text-rose-400'}"
+          >
+            {diagnostic.verdict}
+          </span>
+        </div>
+        <div class="text-[var(--text-dim)] leading-tight">{diagnostic.message}</div>
+        <div class="grid grid-cols-3 gap-1 pt-1 border-t border-[var(--border-faint)] text-center font-mono text-[9px]">
+          <div>
+            <span class="text-[var(--text-dim)] block">Expected</span>
+            <span class="font-semibold text-[var(--text-primary)]">{diagnostic.expectedCount || "UNKNOWN"}</span>
+          </div>
+          <div>
+            <span class="text-[var(--text-dim)] block">Discovered</span>
+            <span class="font-semibold text-[var(--text-primary)]">{diagnostic.discoveredCount}</span>
+          </div>
+          <div>
+            <span class="text-[var(--text-dim)] block">Usable (DOM)</span>
+            <span class="font-semibold {diagnostic.usableAssetCount < diagnostic.discoveredCount ? 'text-amber-400' : 'text-emerald-400'}">
+              {diagnostic.usableAssetCount}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>

@@ -171,6 +171,15 @@ describe("ChapterPreparationManager — State Machine & Truthful Accounting", ()
   });
 
   it("transitions to ready when all pages complete successfully", async () => {
+    // Inject verified reader metadata indicating expected page count is 2
+    const script = document.createElement("script");
+    script.id = "__NEXT_DATA__";
+    script.type = "application/json";
+    script.textContent = JSON.stringify({
+      props: { pageProps: { chapter: { total_pages: 2 } } },
+    });
+    document.body.appendChild(script);
+
     const reader = document.createElement("div");
     reader.className = "reader-container";
 

@@ -74,7 +74,14 @@ export function markPending(src: string, cacheKey?: string): void {
   );
 }
 
-export function markDone(src: string, cacheKey?: string): void {
+export function markDone(
+  src: string,
+  cacheKey?: string,
+  result?: RenderedPageResult,
+): void {
+  if (result) {
+    setRenderedResult(src, result);
+  }
   bySrc.set(srcKeyOf(src), "done");
   if (cacheKey) {
     byCacheKey.set(cacheKey, "done");
@@ -93,7 +100,12 @@ export function markDone(src: string, cacheKey?: string): void {
   }
   document.dispatchEvent(
     new CustomEvent("lmt:translation-status", {
-      detail: { src, cacheKey, status: "done" as const },
+      detail: {
+        src,
+        cacheKey,
+        status: "done" as const,
+        result: result ?? getRenderedResult(src),
+      },
     }),
   );
 }

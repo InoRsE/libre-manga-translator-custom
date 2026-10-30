@@ -3,7 +3,11 @@ import { resolveActiveSiteRule, getSiteRule } from "@/lib/adapters";
 import type { MangaTargetElement } from "@/lib/canvas";
 import { getElementSrc } from "@/lib/canvas";
 import * as Registry from "./translation-registry";
-import type { AutoTranslateOrchestrator } from "./auto-translate";
+import {
+  type AutoTranslateOrchestrator,
+  findMountedImage,
+} from "./auto-translate";
+import { resolveImagePageIndex } from "./utils";
 import {
   saveChapterRecord,
   getChapterRecord,
@@ -39,12 +43,48 @@ export type ChapterDownloadState =
   | "download_completed"
   | "download_failed";
 
+export interface ChapterPageItem {
+  pageNumber: number; // 1-based (1, 2, ... 22)
+  pageIndex: number;  // 0-based
+  src: string;
+  srcKey: string;
+  element?: MangaTargetElement;
+  isMounted: boolean;
+  isUsableAsset: boolean;
+}
+
+export interface ChapterDiagnosticResult {
+  seriesName: string;
+  chapterId: string;
+  chapterTitle: string;
+  url: string;
+  expectedCount: number; // 0 if unknown
+  discoveredCount: number;
+  usableAssetCount: number;
+  missingPageNumbers: number[];
+  pages: Array<{
+    pageNumber: number;
+    pageIndex: number;
+    src: string;
+    isMounted: boolean;
+    isUsableAsset: boolean;
+    hasCachedTranslation: boolean;
+  }>;
+  verdict:
+    | "ELIGIBLE_FOR_PROCESSING"
+    | "INCOMPLETE_DISCOVERY"
+    | "UNKNOWN_EXPECTED_COUNT"
+    | "DETACHED_ASSETS";
+  message: string;
+}
+
 export interface ChapterPrepProgress {
   status: ChapterPrepStatus;
   downloadState?: ChapterDownloadState;
   expectedCount?: number;
   discovered: number;
   discoveredCount?: number;
+  usableAssetCount?: number;
   fetchedCount?: number;
   completed: number;
   verifiedCount?: number;
@@ -321,6 +361,10 @@ export function findChapterImages(
  * Progressively triggers discovery on virtualized/lazy-scrolling readers.
  * Accumulates unique page identities across scrolling steps so pages unmounted
  * by the virtualizer are preserved.
+ *
+ * M1.4.2 REPAIR 3: Strictly distinguishes expectedCount, discoveredCount, and usableAssetCount.
+ * Does NOT infer expectedCount from discoveredCount when expected count is unknown.
+ * Determines deterministic page order by resolving page numbers from URLs/attributes.
  */
 export async function discoverChapterImagesProgressive(
   activeRule: SiteRule | null,
@@ -331,32 +375,46 @@ export async function discoverChapterImagesProgressive(
   },
 ): Promise<{
   images: MangaTargetElement[];
+  pages: ChapterPageItem[];
   expectedCount: number;
   discoveredCount: number;
+  usableAssetCount: number;
 }> {
   const detectedExpected =
     options?.expectedCount ?? extractExpectedPageCount(document, activeRule);
 
+  // M1.4.2 REPAIR 3: Never infer expectedCount from discoveredCount when unknown.
+  // If metadata doesn't specify expected page count, expectedCount remains 0 (unknown).
+  const expectedCount =
+    detectedExpected && detectedExpected > 0 ? detectedExpected : 0;
+
   // Accumulate pages across all scroll steps to prevent virtualized unmount loss
-  const accumulatedMap = new Map<string, MangaTargetElement>();
+  const accumulatedMap = new Map<
+    string,
+    { img: MangaTargetElement; src: string; pageNumber: number }
+  >();
+
+  const registerCandidate = (img: MangaTargetElement) => {
+    const src = getElementSrc(img);
+    if (!src) return;
+    const k = Registry.srcKeyOf(src);
+    const resolvedPage = resolveImagePageIndex(img, src, 0);
+    const existing = accumulatedMap.get(k);
+    if (!existing) {
+      accumulatedMap.set(k, { img, src, pageNumber: resolvedPage });
+    } else {
+      if (typeof document !== "undefined" && document.body?.contains(img)) {
+        existing.img = img;
+      }
+      if (existing.pageNumber <= 0 && resolvedPage > 0) {
+        existing.pageNumber = resolvedPage;
+      }
+    }
+  };
+
   const initialImages = findChapterImages(activeRule);
   for (const img of initialImages) {
-    const src = getElementSrc(img);
-    const k = src ? Registry.srcKeyOf(src) : "";
-    if (k && !accumulatedMap.has(k)) {
-      accumulatedMap.set(k, img);
-    }
-  }
-
-  const expectedCount = detectedExpected ?? accumulatedMap.size;
-
-  // If already discovered all expected pages (or no expected count known and 0 found)
-  if (accumulatedMap.size >= expectedCount && expectedCount > 0) {
-    return {
-      images: Array.from(accumulatedMap.values()),
-      expectedCount,
-      discoveredCount: accumulatedMap.size,
-    };
+    registerCandidate(img);
   }
 
   // Virtualized reader detected: container only mounts visible elements.
@@ -373,67 +431,135 @@ export async function discoverChapterImagesProgressive(
   const maxAttempts = options?.maxScrollAttempts ?? 25;
   const delayMs = options?.scrollDelayMs ?? 40;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const scrollStep = container?.clientHeight
-      ? Math.max(800, container.clientHeight * 0.8)
-      : 1000;
+  const shouldScroll =
+    expectedCount > 0
+      ? accumulatedMap.size < expectedCount
+      : initialImages.length > 0;
+
+  if (shouldScroll) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const scrollStep = container?.clientHeight
+        ? Math.max(800, container.clientHeight * 0.8)
+        : 1000;
+      if (container && container !== document.documentElement) {
+        container.scrollTop += scrollStep;
+      } else if (
+        typeof window !== "undefined" &&
+        typeof window.scrollBy === "function"
+      ) {
+        window.scrollBy(0, scrollStep);
+      }
+
+      try {
+        if (container) {
+          container.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event("scroll"));
+        }
+      } catch {}
+
+      await new Promise((r) => setTimeout(r, delayMs));
+
+      const stepImages = findChapterImages(activeRule);
+      for (const img of stepImages) {
+        registerCandidate(img);
+      }
+
+      if (expectedCount > 0 && accumulatedMap.size >= expectedCount) {
+        break;
+      }
+
+      // Check if bottom reached
+      if (
+        container &&
+        container.scrollTop + container.clientHeight >=
+          container.scrollHeight - 50
+      ) {
+        break;
+      }
+    }
+
+    // Restore scroll position
     if (container && container !== document.documentElement) {
-      container.scrollTop += scrollStep;
+      container.scrollTop = originalScrollTop;
     } else if (
       typeof window !== "undefined" &&
-      typeof window.scrollBy === "function"
+      typeof window.scrollTo === "function"
     ) {
-      window.scrollBy(0, scrollStep);
+      window.scrollTo(0, originalScrollTop);
     }
+  }
 
-    try {
-      if (container) {
-        container.dispatchEvent(new Event("scroll", { bubbles: true }));
-      }
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new Event("scroll"));
-      }
-    } catch {}
+  // Re-check currently mounted DOM images after restoring scroll position
+  const currentMounted = findChapterImages(activeRule);
+  for (const img of currentMounted) {
+    registerCandidate(img);
+  }
 
-    await new Promise((r) => setTimeout(r, delayMs));
+  // Sort accumulated candidates deterministically by pageNumber / document position
+  const rawItems = Array.from(accumulatedMap.values());
+  const FOLLOWING =
+    typeof Node !== "undefined" ? Node.DOCUMENT_POSITION_FOLLOWING : 4;
+  const PRECEDING =
+    typeof Node !== "undefined" ? Node.DOCUMENT_POSITION_PRECEDING : 2;
 
-    const stepImages = findChapterImages(activeRule);
-    for (const img of stepImages) {
-      const src = getElementSrc(img);
-      const k = src ? Registry.srcKeyOf(src) : "";
-      if (k && !accumulatedMap.has(k)) {
-        accumulatedMap.set(k, img);
-      }
-    }
-
-    if (expectedCount > 0 && accumulatedMap.size >= expectedCount) {
-      break;
-    }
-
-    // Check if bottom reached
+  rawItems.sort((a, b) => {
     if (
-      container &&
-      container.scrollTop + container.clientHeight >= container.scrollHeight - 50
+      a.pageNumber > 0 &&
+      b.pageNumber > 0 &&
+      a.pageNumber !== b.pageNumber
     ) {
-      break;
+      return a.pageNumber - b.pageNumber;
     }
-  }
+    if (
+      typeof document !== "undefined" &&
+      document.body?.contains(a.img) &&
+      document.body?.contains(b.img) &&
+      typeof a.img.compareDocumentPosition === "function"
+    ) {
+      try {
+        const pos = a.img.compareDocumentPosition(b.img);
+        if (pos & FOLLOWING) return -1;
+        if (pos & PRECEDING) return 1;
+      } catch {}
+    }
+    return 0;
+  });
 
-  // Restore scroll position
-  if (container && container !== document.documentElement) {
-    container.scrollTop = originalScrollTop;
-  } else if (
-    typeof window !== "undefined" &&
-    typeof window.scrollTo === "function"
-  ) {
-    window.scrollTo(0, originalScrollTop);
-  }
+  const pages: ChapterPageItem[] = rawItems.map((item, idx) => {
+    const isMounted =
+      typeof document !== "undefined" && document.body?.contains(item.img);
+    const naturalW =
+      "naturalWidth" in item.img ? item.img.naturalWidth : item.img.width;
+    const naturalH =
+      "naturalHeight" in item.img ? item.img.naturalHeight : item.img.height;
+    const isUsableAsset =
+      isMounted && (naturalW > 0 || naturalH > 0 || !!item.src);
+    const pageNum = item.pageNumber > 0 ? item.pageNumber : idx + 1;
 
-  const finalImages = Array.from(accumulatedMap.values());
+    return {
+      pageNumber: pageNum,
+      pageIndex: pageNum - 1,
+      src: item.src,
+      srcKey: Registry.srcKeyOf(item.src),
+      element: isMounted ? item.img : undefined,
+      isMounted,
+      isUsableAsset,
+    };
+  });
+
+  const usableAssetCount = pages.filter((p) => p.isUsableAsset).length;
+  const finalImages = pages
+    .map((p) => p.element)
+    .filter((el): el is MangaTargetElement => !!el);
+
   return {
     images: finalImages,
-    expectedCount: Math.max(expectedCount, finalImages.length),
-    discoveredCount: finalImages.length,
+    pages,
+    expectedCount,
+    discoveredCount: pages.length,
+    usableAssetCount,
   };
 }
 
@@ -447,6 +573,7 @@ export class ChapterPreparationManager {
   private downloadState: ChapterDownloadState = "not_started";
   private expectedCount = 0;
   private discovered = 0;
+  private usableAssetCount = 0;
   private fetchedCount = 0;
   private verifiedCount = 0;
   private completedKeys = new Set<string>();
@@ -455,6 +582,7 @@ export class ChapterPreparationManager {
   private savingKeys = new Set<string>();
   private targetKeys = new Set<string>();
   private imageIndexMap = new Map<string, number>();
+  private orderedPages: ChapterPageItem[] = [];
   private orderedImages: MangaTargetElement[] = [];
   private seriesName = "MANGA";
   private chapterId = "001";
@@ -494,8 +622,9 @@ export class ChapterPreparationManager {
           this.targetKeys.delete(k);
           this.inFlightKeys.delete(k);
 
-          // M1.4.1 REPAIR B: Verify rendered image asset before marking verified
-          const rendered = Registry.getRenderedResult(detail.src);
+          // M1.4.1 REPAIR B & M1.4.2 REPAIR 1: Verify rendered image asset before marking verified
+          const eventResult = (detail as any).result;
+          const rendered = eventResult ?? Registry.getRenderedResult(detail.src);
           const renderedUrl = rendered?.renderedUrl;
           const isValidDataUrl =
             typeof renderedUrl === "string" &&
@@ -660,10 +789,14 @@ export class ChapterPreparationManager {
       const done = this.completedKeys.size;
       const failed = this.failedKeys.size;
 
-      // M1.4.1 REPAIR A: Strict readiness check.
-      // A chapter is ONLY ready if every expected page was discovered, completed, and verified without failures!
+      // M1.4.1 REPAIR A & M1.4.2 REPAIR 3: Strict readiness check.
+      // A chapter is ONLY ready if:
+      // 1. Expected count is verified (> 0).
+      // 2. Exactly every expected page was discovered (discovered === expected).
+      // 3. Exactly every expected page was completed and verified (done === expected).
+      // 4. Zero pages failed (failed === 0).
       const isCompleteDiscovery = expected > 0 && discovered === expected;
-      const isAllVerified = done === expected && failed === 0;
+      const isAllVerified = expected > 0 && done === expected && failed === 0;
 
       if (isCompleteDiscovery && isAllVerified) {
         this.status = "ready";
@@ -693,7 +826,9 @@ export class ChapterPreparationManager {
         await this.exportAndDownloadCbz();
       } else if (done > 0) {
         this.status = "partial";
-        if (!isCompleteDiscovery) {
+        if (expected <= 0) {
+          this.message = `Partial: Unknown total page count (${done} prepared, completeness unverified).`;
+        } else if (!isCompleteDiscovery) {
           this.message = `Partial: Incomplete discovery (${discovered}/${expected} pages found, ${done} prepared).`;
         } else {
           this.message = `Partial: ${done}/${expected} completed (${failed} failed).`;
@@ -938,8 +1073,9 @@ export class ChapterPreparationManager {
     const discovery = await discoverChapterImagesProgressive(activeRule);
     this.expectedCount = discovery.expectedCount;
     this.discovered = discovery.discoveredCount;
-    const images = discovery.images;
-    this.orderedImages = images;
+    this.usableAssetCount = discovery.usableAssetCount;
+    this.orderedPages = discovery.pages;
+    this.orderedImages = discovery.images;
 
     if (this.discovered === 0) {
       this.status = "failed";
@@ -948,9 +1084,13 @@ export class ChapterPreparationManager {
       return this.getProgress();
     }
 
-    // M1.4.1 REPAIR A: Incomplete discovery guard
-    // If expected count is known and discovery is incomplete, report partial and never mark ready!
-    if (this.expectedCount > 0 && this.discovered < this.expectedCount) {
+    // M1.4.1 REPAIR A & M1.4.2 REPAIR 3: Incomplete discovery or unknown expected count guard
+    // If expected count is unknown, completeness cannot be verified.
+    if (this.expectedCount <= 0) {
+      console.warn(
+        "[LMT Chapter Prep] Chapter completeness is unverified: expected page count could not be extracted.",
+      );
+    } else if (this.discovered < this.expectedCount) {
       this.status = "partial";
       this.message = `Incomplete chapter discovery: found ${this.discovered} of ${this.expectedCount} pages. Chapter cannot be marked Ready.`;
       this.emitProgress();
@@ -963,15 +1103,14 @@ export class ChapterPreparationManager {
     // Action B: Check durable offline store for completed pages across reload
     const storedPages = await getChapterPages(this.chapterKey);
 
-    for (let i = 0; i < images.length; i++) {
-      const img = images[i];
-      const src = getElementSrc(img);
-      const k = Registry.srcKeyOf(src);
-      this.imageIndexMap.set(k, i);
+    for (let i = 0; i < this.orderedPages.length; i++) {
+      const pageItem = this.orderedPages[i];
+      const k = pageItem.srcKey;
+      this.imageIndexMap.set(k, pageItem.pageIndex);
 
       const isStoredDone = storedPages.some(
         (p) =>
-          (p.src === src || p.src === k) &&
+          (p.src === pageItem.src || p.src === k) &&
           p.status === "done" &&
           p.verified,
       );
@@ -981,33 +1120,69 @@ export class ChapterPreparationManager {
         this.verifiedCount++;
       } else {
         this.targetKeys.add(k);
-        pendingImages.push(img);
+        // Only enqueue if element is currently mounted in DOM!
+        if (
+          pageItem.element &&
+          typeof document !== "undefined" &&
+          document.body?.contains(pageItem.element)
+        ) {
+          pendingImages.push(pageItem.element);
+        } else {
+          // Look for currently mounted element in DOM
+          const liveImg = findMountedImage(pageItem.src);
+          if (
+            liveImg &&
+            typeof document !== "undefined" &&
+            document.body?.contains(liveImg)
+          ) {
+            pendingImages.push(liveImg);
+          } else {
+            // M1.4.2 REPAIR 2: Never treat a detached DOM reference as a usable page asset.
+            // Mark failed explicitly so it does not hang in queue!
+            console.warn(
+              `[LMT Chapter Prep] Page ${pageItem.pageNumber} (${pageItem.src}) is detached from DOM; marking failed.`,
+            );
+            this.failedKeys.add(k);
+          }
+        }
       }
     }
 
     if (this.targetKeys.size === 0) {
-      this.status = "ready";
-      this.message = `Ready! All ${this.discovered} pages already translated from cache.`;
-      this.endTime = Date.now();
-      await saveChapterRecord({
-        id: this.chapterKey,
-        seriesName: this.seriesName,
-        chapterId: this.chapterId,
-        chapterTitle: this.chapterTitle,
-        url: typeof window !== "undefined" ? window.location.href : "",
-        createdAt: this.startTime ?? Date.now(),
-        updatedAt: this.endTime,
-        expectedCount: this.expectedCount,
-        discoveredCount: this.discovered,
-        fetchedCount: this.fetchedCount,
-        verifiedCount: this.completedKeys.size,
-        status: "ready",
-        exportStatus: this.exportStatus,
-        exportedFilename: this.exportedFilename,
-      }).catch((err) => {
-        console.warn("LMT: Failed to persist chapter manifest:", err);
-      });
-      await this.exportAndDownloadCbz();
+      if (
+        this.expectedCount > 0 &&
+        this.completedKeys.size === this.expectedCount &&
+        this.failedKeys.size === 0
+      ) {
+        this.status = "ready";
+        this.message = `Ready! All ${this.discovered} pages already translated from cache.`;
+        this.endTime = Date.now();
+        await saveChapterRecord({
+          id: this.chapterKey,
+          seriesName: this.seriesName,
+          chapterId: this.chapterId,
+          chapterTitle: this.chapterTitle,
+          url: typeof window !== "undefined" ? window.location.href : "",
+          createdAt: this.startTime ?? Date.now(),
+          updatedAt: this.endTime,
+          expectedCount: this.expectedCount,
+          discoveredCount: this.discovered,
+          fetchedCount: this.fetchedCount,
+          verifiedCount: this.completedKeys.size,
+          status: "ready",
+          exportStatus: this.exportStatus,
+          exportedFilename: this.exportedFilename,
+        }).catch((err) => {
+          console.warn("LMT: Failed to persist chapter manifest:", err);
+        });
+        await this.exportAndDownloadCbz();
+      } else {
+        this.status = "partial";
+        this.message =
+          this.expectedCount <= 0
+            ? `Partial: Unknown total page count (${this.completedKeys.size} prepared from cache, completeness unverified).`
+            : `Partial: ${this.completedKeys.size}/${this.expectedCount} completed (${this.failedKeys.size} failed).`;
+      }
       this.emitProgress();
       return this.getProgress();
     }
@@ -1040,6 +1215,129 @@ export class ChapterPreparationManager {
     return this.getProgress();
   }
 
+  getChapterKey(): string {
+    return this.chapterKey;
+  }
+
+  /**
+   * Collector-only diagnostic mode for evaluating chapter collection without invoking Gemini API.
+   * Reports expected count, discovered count, usable assets, page order, and missing pages.
+   */
+  async runDiagnostic(): Promise<ChapterDiagnosticResult> {
+    const activeRule =
+      this.orchestrator.getActiveRule() ?? (await resolveActiveSiteRule());
+
+    try {
+      const siteRule = await getSiteRule();
+      this.seriesName = siteRule.seriesName || this.seriesName || "MANGA";
+      this.chapterId = siteRule.chapterId || this.chapterId || "001";
+      this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
+      this.chapterTitle =
+        siteRule.seriesName && siteRule.chapterId
+          ? `${siteRule.seriesName} · Ch.${siteRule.chapterId}`
+          : document.title;
+    } catch {
+      this.seriesName = "MANGA";
+      this.chapterId = "001";
+      this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
+      this.chapterTitle = typeof document !== "undefined" ? document.title : "";
+    }
+
+    const discovery = await discoverChapterImagesProgressive(activeRule);
+    const storedPages = await getChapterPages(this.chapterKey);
+
+    const pagesInfo = discovery.pages.map((p) => {
+      const isMounted = p.element
+        ? typeof document !== "undefined" && document.body?.contains(p.element)
+        : findMountedImage(p.src) !== null;
+      const isStoredDone = storedPages.some(
+        (sp) =>
+          (sp.src === p.src || sp.src === p.srcKey) &&
+          sp.status === "done" &&
+          sp.verified,
+      );
+      return {
+        pageNumber: p.pageNumber,
+        pageIndex: p.pageIndex,
+        src: p.src,
+        isMounted,
+        isUsableAsset: isMounted,
+        hasCachedTranslation: isStoredDone,
+      };
+    });
+
+    const expectedCount = discovery.expectedCount;
+    const discoveredCount = discovery.discoveredCount;
+    const usableAssetCount = pagesInfo.filter((p) => p.isUsableAsset).length;
+
+    // Determine missing page numbers
+    const discoveredPageNumbers = new Set(pagesInfo.map((p) => p.pageNumber));
+    const missingPageNumbers: number[] = [];
+    if (expectedCount > 0) {
+      for (let i = 1; i <= expectedCount; i++) {
+        if (!discoveredPageNumbers.has(i)) {
+          missingPageNumbers.push(i);
+        }
+      }
+    }
+
+    let verdict: ChapterDiagnosticResult["verdict"] = "ELIGIBLE_FOR_PROCESSING";
+    let message = `All ${expectedCount} expected pages discovered with usable assets in correct order.`;
+
+    if (expectedCount <= 0) {
+      verdict = "UNKNOWN_EXPECTED_COUNT";
+      message = `Found ${discoveredCount} pages, but expected page count could not be extracted from reader metadata.`;
+    } else if (discoveredCount < expectedCount) {
+      verdict = "INCOMPLETE_DISCOVERY";
+      message = `Incomplete discovery: found ${discoveredCount} of ${expectedCount} pages (missing pages: ${missingPageNumbers.join(", ")}).`;
+    } else if (usableAssetCount < discoveredCount) {
+      verdict = "DETACHED_ASSETS";
+      message = `${discoveredCount - usableAssetCount} of ${discoveredCount} pages are currently detached from DOM (virtualized reader).`;
+    }
+
+    const result: ChapterDiagnosticResult = {
+      seriesName: this.seriesName,
+      chapterId: this.chapterId,
+      chapterTitle: this.chapterTitle,
+      url: typeof window !== "undefined" ? window.location.href : "",
+      expectedCount,
+      discoveredCount,
+      usableAssetCount,
+      missingPageNumbers,
+      pages: pagesInfo,
+      verdict,
+      message,
+    };
+
+    console.group(`[LMT Chapter Diagnostic] ${this.chapterTitle || "Chapter"}`);
+    console.info(
+      `Expected: ${expectedCount || "UNKNOWN"} | Discovered: ${discoveredCount} | Usable Assets: ${usableAssetCount} | Verdict: ${verdict}`,
+    );
+    if (typeof console.table === "function") {
+      console.table(
+        pagesInfo.map((p) => ({
+          "Page #": p.pageNumber,
+          Mounted: p.isMounted ? "YES" : "NO (detached)",
+          Usable: p.isUsableAsset ? "YES" : "NO",
+          Cached: p.hasCachedTranslation ? "YES" : "NO",
+          "Source URL":
+            p.src.length > 60 ? p.src.substring(0, 57) + "..." : p.src,
+        })),
+      );
+    }
+    console.groupEnd();
+
+    if (typeof document !== "undefined") {
+      document.dispatchEvent(
+        new CustomEvent("lmt:chapter-prep-diagnostic-result", {
+          detail: result,
+        }),
+      );
+    }
+
+    return result;
+  }
+
   getProgress(): ChapterPrepProgress {
     const elapsedSeconds = this.startTime
       ? Math.round(
@@ -1053,6 +1351,7 @@ export class ChapterPreparationManager {
       expectedCount: this.expectedCount,
       discovered: this.discovered,
       discoveredCount: this.discovered,
+      usableAssetCount: this.usableAssetCount,
       fetchedCount: this.fetchedCount,
       completed: this.completedKeys.size,
       verifiedCount: this.verifiedCount,
