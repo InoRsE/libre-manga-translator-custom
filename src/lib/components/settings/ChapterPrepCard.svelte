@@ -269,9 +269,9 @@
         <div class="flex items-center justify-between font-mono">
           <span class="text-[var(--text-dim)]">Verdict:</span>
           <span
-            class="font-semibold px-1.5 py-0.5 rounded text-[9px] {diagnostic.verdict === 'COLLECTOR_LIVE_VERIFIED' || diagnostic.verdict === 'READY_FOR_OWNER_RETEST' || diagnostic.verdict === 'READY_FOR_OWNER_BROWSER_ACCEPTANCE' || diagnostic.verdict === 'ELIGIBLE_FOR_PROCESSING'
+            class="font-semibold px-1.5 py-0.5 rounded text-[9px] {diagnostic.verdict === 'COLLECTOR_LIVE_VERIFIED' || diagnostic.verdict === 'READY_FOR_OWNER_ZERO_API_RETEST' || diagnostic.verdict === 'READY_FOR_OWNER_RETEST' || diagnostic.verdict === 'READY_FOR_OWNER_BROWSER_ACCEPTANCE' || diagnostic.verdict === 'ELIGIBLE_FOR_PROCESSING'
               ? 'bg-emerald-500/20 text-emerald-400'
-              : diagnostic.verdict === 'DETACHED_ASSETS'
+              : diagnostic.verdict === 'PARTIAL_WITH_BLOCKERS' || diagnostic.verdict === 'PARTIAL_WITH_VERIFIED_BLOCKERS' || diagnostic.verdict === 'COLLECTOR_PARTIAL_WITH_BLOCKERS' || diagnostic.verdict === 'DETACHED_ASSETS'
                 ? 'bg-amber-500/20 text-amber-400'
                 : 'bg-rose-500/20 text-rose-400'}"
           >

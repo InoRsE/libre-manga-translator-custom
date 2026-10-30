@@ -55,11 +55,19 @@ export default defineContentScript({
       // Never break page execution
     }
 
-    // ── M1.4.3: Reader Chapter Page List Bridge (Comix.to & Encrypted Readers) ──
-    // Runs at document_start in MAIN world. Hook TextDecoder and atob to capture
-    // decrypted chapter manifests the moment they arrive, without requiring DOM
-    // elements to be mounted on screen or user scrolling.
+    // ── M1.4.3 & M1.4.5.1: Reader Chapter Page List Bridge (Comix.to & Encrypted Readers) ──
+    // Scope isolation (M1.4.5.1): Restricted strictly to Comix origins (comix.to, comix.ws).
+    // On all other websites/origins, decoder monkey-patching is completely skipped.
     try {
+      const isComixOrigin =
+        typeof window !== "undefined" &&
+        (window.location.hostname.includes("comix.to") ||
+          window.location.hostname.includes("comix.ws"));
+
+      if (!isComixOrigin) {
+        return;
+      }
+
       let capturedPages: Array<{
         src: string;
         url?: string;

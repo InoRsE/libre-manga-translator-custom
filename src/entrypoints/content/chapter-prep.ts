@@ -47,8 +47,10 @@ export type ChapterDownloadState =
 
 export type CollectorVerdict =
   | "COLLECTOR_LIVE_VERIFIED"
+  | "READY_FOR_OWNER_ZERO_API_RETEST"
   | "READY_FOR_OWNER_RETEST"
   | "READY_FOR_OWNER_BROWSER_ACCEPTANCE"
+  | "PARTIAL_WITH_BLOCKERS"
   | "PARTIAL_WITH_VERIFIED_BLOCKERS"
   | "COLLECTOR_PARTIAL_WITH_BLOCKERS"
   | "BLOCKED"
@@ -67,6 +69,9 @@ export interface ChapterPageItem {
   isMounted: boolean;
   isUsableAsset: boolean;
   isAcquired?: boolean;
+  isPersisted?: boolean;
+  fetchStatus?: number | string;
+  error?: string;
   width?: number;
   height?: number;
   byteLength?: number;
@@ -93,6 +98,7 @@ export interface ChapterDiagnosticResult {
     src: string;
     isMounted: boolean;
     isAcquired?: boolean;
+    isPersisted?: boolean;
     isUsableAsset: boolean;
     hasCachedTranslation: boolean;
     fetchStatus?: number | string;
@@ -171,33 +177,115 @@ export function getCapturedPagesFromBridge(doc: Document = document): Array<{
   return [];
 }
 
+let comixSettingsSnapshot: Record<string, string | null> | null = null;
+let comixUnloadListenerAttached = false;
+
 /**
- * Ensures native reader preloading is activated on Comix.to / Comix.ws.
- * Comix stores user reader preferences in localStorage under 'reader.default.v3'
- * and 'reader.webtoon.v3'. Setting preload to 'all' instructs the React reader
- * to mount and preload all chapter page images eagerly.
+ * Validates whether current location represents a supported Comix origin.
+ */
+export function isComixSite(loc?: Location): boolean {
+  try {
+    const l = loc || (typeof window !== "undefined" ? window.location : undefined);
+    if (!l) return false;
+    const host = l.hostname || "";
+    return host.includes("comix.to") || host.includes("comix.ws");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns currently captured settings snapshot (for testing and verification).
+ */
+export function getComixSettingsSnapshot(): Record<string, string | null> | null {
+  return comixSettingsSnapshot;
+}
+
+/**
+ * Applies temporary native reader preloading for Comix.to / Comix.ws.
+ * Comix stores Zustand-persisted settings under 'reader.default.v3' and 'reader.webtoon.v3'
+ * with schema: { state: { preload: "all", ... }, version: 3 }.
+ *
+ * CRITICAL SAFETY & SCOPE:
+ * - Restricted strictly to Comix origins; never touches non-Comix websites.
+ * - Snapshots original values before any modification.
+ * - Paired with restoreComixNativeSettings() to guarantee owner settings are restored.
+ * - Crash-recovery limitation: If the browser process or tab crashes abruptly (SIGKILL / power loss)
+ *   before beforeunload fires, settings may remain 'all' until next session.
+ *   Registered beforeunload listener guarantees restoration on normal tab closure/navigation.
  */
 export function applyComixNativePreload(): boolean {
   try {
     if (typeof window === "undefined" || !window.localStorage) return false;
+    if (!isComixSite()) return false;
+
+    // Snapshot existing values once before any modifications
+    if (!comixSettingsSnapshot) {
+      comixSettingsSnapshot = {
+        "reader.default.v3": window.localStorage.getItem("reader.default.v3"),
+        "reader.webtoon.v3": window.localStorage.getItem("reader.webtoon.v3"),
+      };
+
+      if (!comixUnloadListenerAttached && typeof window.addEventListener === "function") {
+        window.addEventListener("beforeunload", () => {
+          restoreComixNativeSettings();
+        });
+        comixUnloadListenerAttached = true;
+      }
+    }
+
     let modified = false;
     for (const key of ["reader.default.v3", "reader.webtoon.v3"]) {
       const item = window.localStorage.getItem(key);
       if (item) {
         try {
           const parsed = JSON.parse(item);
-          if (parsed && typeof parsed === "object" && parsed.preload !== "all") {
-            parsed.preload = "all";
-            window.localStorage.setItem(key, JSON.stringify(parsed));
-            modified = true;
+          if (parsed && typeof parsed === "object") {
+            if (!parsed.state || typeof parsed.state !== "object") {
+              parsed.state = {};
+            }
+            if (parsed.state.preload !== "all") {
+              parsed.state.preload = "all";
+              window.localStorage.setItem(key, JSON.stringify(parsed));
+              modified = true;
+            }
           }
         } catch {}
       } else {
-        window.localStorage.setItem(key, JSON.stringify({ preload: "all" }));
+        window.localStorage.setItem(
+          key,
+          JSON.stringify({
+            state: { preload: "all" },
+            version: 3,
+          }),
+        );
         modified = true;
       }
     }
     return modified;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Restores the owner's original Comix reader preferences from snapshot.
+ * Guarantees zero persistent side effects on the user's reading experience.
+ */
+export function restoreComixNativeSettings(): boolean {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return false;
+    if (!isComixSite() || !comixSettingsSnapshot) return false;
+
+    for (const [key, originalValue] of Object.entries(comixSettingsSnapshot)) {
+      if (originalValue === null) {
+        window.localStorage.removeItem(key);
+      } else {
+        window.localStorage.setItem(key, originalValue);
+      }
+    }
+    comixSettingsSnapshot = null;
+    return true;
   } catch {
     return false;
   }
@@ -292,8 +380,14 @@ export function extractChapterIdentity(doc: Document = document): {
 /**
  * Specialized slot-based discovery for Comix.to / Comix.ws and modern readers
  * that maintain explicit page slot containers (e.g. .rpage-page[data-page]).
- * Iterates expected page slots, extracts child images, and performs bounded
- * container scrolling on .rpage-main if virtualized slots need mounting.
+ *
+ * M1.4.5.1 OBSERVABLE LOAD VERIFICATION & IMMEDIATE PERSISTENCE:
+ * - Uses .rpage-page[data-page] as authoritative slot identity.
+ * - Targets viewport scrolling directly to each slot 1..N.
+ * - Verifies observable page loading and decoding (complete, dimensions > 0).
+ * - Immediately persists acquired binary assets to IndexedDB before subsequent
+ *   scrolling can cause the React virtualizer to unmount the slot from the DOM.
+ * - Records bounded retries and explicit visible failures.
  */
 export async function discoverSlotBasedPages(
   doc: Document = document,
@@ -302,6 +396,7 @@ export async function discoverSlotBasedPages(
     expectedCount?: number;
     maxScrollAttempts?: number;
     scrollDelayMs?: number;
+    chapterKey?: string;
   },
 ): Promise<ChapterPageItem[] | null> {
   const slotElements = Array.from(
@@ -321,79 +416,127 @@ export async function discoverSlotBasedPages(
       ? doc.querySelector<HTMLElement>(activeRule.containerSelector)
       : null);
 
-  const maxAttempts = options?.maxScrollAttempts ?? 15;
+  const originalScrollTop = container ? container.scrollTop : 0;
+  const maxRetries = options?.maxScrollAttempts ?? 8;
   const delayMs = options?.scrollDelayMs ?? 40;
 
-  // Helper to extract page items from current DOM slots
-  const extractItems = (): Map<
-    number,
-    { el?: MangaTargetElement; src: string; isMounted: boolean; width?: number; height?: number }
-  > => {
-    const map = new Map<
-      number,
-      { el?: MangaTargetElement; src: string; isMounted: boolean; width?: number; height?: number }
-    >();
-    const currentSlots = doc.querySelectorAll<HTMLElement>(".rpage-page[data-page], .rpage-page");
+  const pageMap = new Map<number, ChapterPageItem>();
 
-    currentSlots.forEach((slot, index) => {
-      const dataPage = slot.getAttribute("data-page");
-      const pageNum = dataPage ? parseInt(dataPage, 10) : index + 1;
-      if (isNaN(pageNum) || pageNum <= 0) return;
-
-      const img = slot.querySelector<MangaTargetElement>("img.rpage-page__img, img, canvas");
-      if (img) {
-        if (img instanceof HTMLImageElement) {
-          normalizeImageSrc(img);
-        }
-        const src = getElementSrc(img) || (img instanceof HTMLImageElement ? img.src : "");
-        if (src && !src.startsWith("data:image/svg") && !src.includes("placeholder")) {
-          const isMounted = doc.body?.contains(img) === true;
-          const w = "naturalWidth" in img ? img.naturalWidth : img.width;
-          const h = "naturalHeight" in img ? img.naturalHeight : img.height;
-          map.set(pageNum, {
-            el: isMounted ? img : undefined,
-            src,
+  for (let pNum = 1; pNum <= targetCount; pNum++) {
+    // 1. Fast-path: Check if already persisted in IndexedDB
+    if (options?.chapterKey) {
+      try {
+        const stored = await getPageRecord(options.chapterKey, pNum - 1);
+        if (stored && (stored.originalDataUrl || stored.renderedDataUrl)) {
+          const isMounted = doc.querySelector(`.rpage-page[data-page="${pNum}"] img`) !== null;
+          pageMap.set(pNum, {
+            pageNumber: pNum,
+            pageIndex: pNum - 1,
+            src: stored.src,
+            srcKey: Registry.srcKeyOf(stored.src),
             isMounted,
-            width: w > 0 ? w : undefined,
-            height: h > 0 ? h : undefined,
+            isUsableAsset: true,
+            isAcquired: true,
+            isPersisted: true,
+            fetchStatus: "cached",
+            width: stored.width,
+            height: stored.height,
+            byteLength: stored.byteLength,
+            hash: stored.hash,
           });
+          continue;
         }
-      }
-    });
-    return map;
-  };
+      } catch {}
+    }
 
-  let pageMap = extractItems();
-
-  // If some slots are unmounted and container exists, perform bounded scroll
-  if (container && pageMap.size < targetCount) {
-    const originalScrollTop = container.scrollTop;
-    const scrollStep = Math.max(600, Math.floor(container.clientHeight * 0.75));
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (pageMap.size >= targetCount) break;
-
-      container.scrollTop += scrollStep;
+    // 2. Position viewport directly to authoritative slot .rpage-page[data-page="${pNum}"]
+    let slot = doc.querySelector<HTMLElement>(`.rpage-page[data-page="${pNum}"]`);
+    if (slot && typeof slot.scrollIntoView === "function") {
+      try {
+        slot.scrollIntoView({ block: "center", behavior: "instant" });
+        if (container) {
+          container.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
+      } catch {}
+    } else if (container && container.scrollHeight > 0 && targetCount > 1) {
+      const estRatio = (pNum - 1) / (targetCount - 1);
+      container.scrollTop = Math.round(estRatio * (container.scrollHeight - container.clientHeight));
       try {
         container.dispatchEvent(new Event("scroll", { bubbles: true }));
       } catch {}
+    }
 
-      await new Promise((r) => setTimeout(r, delayMs));
+    // 3. Observable page load verification loop with bounded retries
+    let acquiredItem: ChapterPageItem | null = null;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      slot = doc.querySelector<HTMLElement>(`.rpage-page[data-page="${pNum}"]`);
+      if (slot) {
+        const img = slot.querySelector<MangaTargetElement>("img.rpage-page__img, img, canvas");
+        if (img) {
+          if (img instanceof HTMLImageElement) {
+            normalizeImageSrc(img);
+          }
+          const src = getElementSrc(img) || (img instanceof HTMLImageElement ? img.src : "");
+          if (src && !src.startsWith("data:image/svg") && !src.includes("placeholder")) {
+            const isMounted = doc.body?.contains(img) === true;
+            const w = "naturalWidth" in img ? img.naturalWidth : img.width;
+            const h = "naturalHeight" in img ? img.naturalHeight : img.height;
+            const isDecoded = (w > 0 && h > 0) || (img instanceof HTMLImageElement && img.complete);
 
-      const updated = extractItems();
-      for (const [pNum, info] of updated.entries()) {
-        if (!pageMap.has(pNum) || !pageMap.get(pNum)?.src) {
-          pageMap.set(pNum, info);
+            const item: ChapterPageItem = {
+              pageNumber: pNum,
+              pageIndex: pNum - 1,
+              src,
+              srcKey: Registry.srcKeyOf(src),
+              element: isMounted ? img : undefined,
+              isMounted,
+              isUsableAsset: isMounted && (isDecoded || !!src),
+              width: w > 0 ? w : undefined,
+              height: h > 0 ? h : undefined,
+            };
+
+            // Immediately persist to IndexedDB before subsequent scrolling causes unmounting
+            if (options?.chapterKey) {
+              const acq = await acquirePageAsset(item, options.chapterKey);
+              item.isAcquired = acq.success;
+              item.isPersisted = acq.success;
+              item.fetchStatus = acq.fetchStatus;
+              item.error = acq.error;
+            }
+
+            acquiredItem = item;
+            break;
+          }
         }
       }
 
-      if (container.scrollTop + container.clientHeight >= container.scrollHeight - 20) {
-        break;
-      }
+      await new Promise((r) => setTimeout(r, delayMs));
     }
 
-    // Restore scroll position
-    container.scrollTop = originalScrollTop;
+    if (acquiredItem) {
+      pageMap.set(pNum, acquiredItem);
+    } else {
+      // Record visible failure with authoritative slot identity
+      pageMap.set(pNum, {
+        pageNumber: pNum,
+        pageIndex: pNum - 1,
+        src: "",
+        srcKey: `missing_p${pNum}`,
+        isMounted: false,
+        isUsableAsset: false,
+        isAcquired: false,
+        isPersisted: false,
+        fetchStatus: 404,
+        error: `Page slot .rpage-page[data-page="${pNum}"] unmounted or failed observable load`,
+      });
+    }
+  }
+
+  // Restore scroll position
+  if (container) {
+    try {
+      container.scrollTop = originalScrollTop;
+    } catch {}
   }
 
   if (pageMap.size === 0) {
@@ -401,25 +544,7 @@ export async function discoverSlotBasedPages(
   }
 
   // Convert to ordered ChapterPageItem array 1..N
-  const sortedPageNums = Array.from(pageMap.keys()).sort((a, b) => a - b);
-  const items: ChapterPageItem[] = sortedPageNums.map((pNum) => {
-    const info = pageMap.get(pNum)!;
-    const isUsable =
-      info.isMounted && ((info.width ?? 0) > 0 || (info.height ?? 0) > 0 || !!info.src);
-    return {
-      pageNumber: pNum,
-      pageIndex: pNum - 1,
-      src: info.src,
-      srcKey: Registry.srcKeyOf(info.src),
-      element: info.el,
-      isMounted: info.isMounted,
-      isUsableAsset: isUsable,
-      width: info.width,
-      height: info.height,
-    };
-  });
-
-  return items;
+  return Array.from(pageMap.values()).sort((a, b) => a.pageNumber - b.pageNumber);
 }
 
 /**
@@ -618,6 +743,7 @@ export async function acquireChapterAssets(
     pageNumber: number;
     success: boolean;
     byteLength?: number;
+    fetchStatus?: number | string;
     error?: string;
   }> = [];
   let acquiredCount = 0;
@@ -631,18 +757,25 @@ export async function acquireChapterAssets(
         const page = queue.shift();
         if (!page) break;
         const res = await acquirePageAsset(page, chapterKey);
+        page.fetchStatus = res.fetchStatus;
+        page.error = res.error;
+        page.isAcquired = res.success;
+        page.isPersisted = res.success;
+
         if (res.success) {
           acquiredCount++;
           results.push({
             pageNumber: page.pageNumber,
             success: true,
             byteLength: res.byteLength,
+            fetchStatus: res.fetchStatus,
           });
         } else {
           failedCount++;
           results.push({
             pageNumber: page.pageNumber,
             success: false,
+            fetchStatus: res.fetchStatus,
             error: res.error,
           });
         }
@@ -963,6 +1096,7 @@ export async function discoverChapterImagesProgressive(
     expectedCount?: number;
     maxScrollAttempts?: number;
     scrollDelayMs?: number;
+    chapterKey?: string;
   },
 ): Promise<{
   images: MangaTargetElement[];
@@ -1057,9 +1191,11 @@ export async function discoverChapterImagesProgressive(
       expectedCount,
       maxScrollAttempts: options?.maxScrollAttempts,
       scrollDelayMs: options?.scrollDelayMs,
+      chapterKey: options?.chapterKey,
     });
-    if (slotPages && slotPages.length > 0 && (expectedCount <= 0 || slotPages.length >= expectedCount)) {
-      const usableAssetCount = slotPages.filter((p) => p.isUsableAsset).length;
+    if (slotPages && slotPages.length > 0) {
+      const validDiscovered = slotPages.filter((p) => !!p.src);
+      const usableAssetCount = slotPages.filter((p) => p.isUsableAsset || p.isPersisted).length;
       const finalImages = slotPages
         .map((p) => p.element)
         .filter((el): el is MangaTargetElement => !!el);
@@ -1068,7 +1204,7 @@ export async function discoverChapterImagesProgressive(
         images: finalImages,
         pages: slotPages,
         expectedCount: expectedCount > 0 ? expectedCount : slotPages.length,
-        discoveredCount: slotPages.length,
+        discoveredCount: validDiscovered.length,
         usableAssetCount,
         strategy: "slot_discovery",
       };
@@ -1412,6 +1548,7 @@ export class ChapterPreparationManager {
   }
 
   destroy(): void {
+    restoreComixNativeSettings();
     this.stopHeartbeat();
     if (this.statusListener) {
       document.removeEventListener(
@@ -1886,6 +2023,7 @@ export class ChapterPreparationManager {
   }
 
   stop(): ChapterPrepProgress {
+    restoreComixNativeSettings();
     this.stopHeartbeat();
     this.endTime = Date.now();
     this.targetKeys.clear();
@@ -1913,163 +2051,200 @@ export class ChapterPreparationManager {
   async runDiagnostic(options?: {
     acquireAssets?: boolean;
   }): Promise<ChapterDiagnosticResult> {
-    const activeRule =
-      this.orchestrator.getActiveRule() ?? (await resolveActiveSiteRule());
-
     try {
-      const identity = extractChapterIdentity(document);
-      this.seriesName = identity.seriesName || this.seriesName || "MANGA";
-      this.chapterId = identity.chapterId || this.chapterId || "001";
-      this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
-      this.chapterTitle =
-        identity.chapterTitle || this.chapterTitle || document.title;
-    } catch {
-      this.seriesName = "MANGA";
-      this.chapterId = "001";
-      this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
-      this.chapterTitle = typeof document !== "undefined" ? document.title : "";
-    }
+      const activeRule =
+        this.orchestrator.getActiveRule() ?? (await resolveActiveSiteRule());
 
-    const discovery = await discoverChapterImagesProgressive(activeRule);
-    this.expectedCount = discovery.expectedCount;
-    this.discovered = discovery.discoveredCount;
-    this.orderedPages = discovery.pages;
-
-    // Decoupled asset acquisition (ZERO Gemini API calls!)
-    const shouldAcquire = options?.acquireAssets ?? true;
-    if (
-      shouldAcquire &&
-      discovery.pages.length > 0 &&
-      typeof browser !== "undefined" &&
-      typeof browser.runtime?.sendMessage === "function"
-    ) {
       try {
-        await acquireChapterAssets(discovery.pages, this.chapterKey);
-      } catch (e) {
-        console.warn("[LMT Chapter Diagnostic] Asset acquisition encountered warning:", e);
+        const identity = extractChapterIdentity(document);
+        this.seriesName = identity.seriesName || this.seriesName || "MANGA";
+        this.chapterId = identity.chapterId || this.chapterId || "001";
+        this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
+        this.chapterTitle =
+          identity.chapterTitle || this.chapterTitle || document.title;
+      } catch {
+        this.seriesName = "MANGA";
+        this.chapterId = "001";
+        this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
+        this.chapterTitle = typeof document !== "undefined" ? document.title : "";
       }
-    }
 
-    const storedPages = await getChapterPages(this.chapterKey);
+      // Discover pages (and persist on-the-fly if slot-based)
+      const discovery = await discoverChapterImagesProgressive(activeRule, {
+        chapterKey: this.chapterKey,
+      });
+      this.expectedCount = discovery.expectedCount;
+      this.discovered = discovery.discoveredCount;
+      this.orderedPages = discovery.pages;
 
-    const pagesInfo = discovery.pages.map((p) => {
-      const isMounted = p.element
-        ? typeof document !== "undefined" && document.body?.contains(p.element)
-        : findMountedImage(p.src) !== null;
-      const stored = storedPages.find(
-        (sp) =>
-          sp.pageIndex === p.pageIndex ||
-          sp.src === p.src ||
-          sp.src === p.srcKey,
-      );
-      const isAcquired = !!(
-        stored?.originalDataUrl ||
-        stored?.renderedDataUrl ||
-        p.isAcquired
-      );
-      const isStoredDone = stored?.status === "done" && stored.verified;
-      const isUsableAsset = isMounted || isAcquired;
-
-      return {
-        pageNumber: p.pageNumber,
-        pageIndex: p.pageIndex,
-        src: p.src,
-        isMounted,
-        isAcquired,
-        isUsableAsset,
-        hasCachedTranslation: isStoredDone,
-        width: stored?.width ?? p.width,
-        height: stored?.height ?? p.height,
-        byteLength: stored?.byteLength ?? p.byteLength,
-        hash: stored?.hash ?? p.hash,
-      };
-    });
-
-    const expectedCount = discovery.expectedCount;
-    const discoveredCount = discovery.discoveredCount;
-    const mountedCount = pagesInfo.filter((p) => p.isMounted).length;
-    const acquiredCount = pagesInfo.filter((p) => p.isAcquired).length;
-    const persistedCount = storedPages.length;
-    const usableAssetCount = pagesInfo.filter((p) => p.isUsableAsset).length;
-
-    // Determine missing page numbers
-    const discoveredPageNumbers = new Set(pagesInfo.map((p) => p.pageNumber));
-    const missingPageNumbers: number[] = [];
-    if (expectedCount > 0) {
-      for (let i = 1; i <= expectedCount; i++) {
-        if (!discoveredPageNumbers.has(i)) {
-          missingPageNumbers.push(i);
+      // Second-pass acquisition safety net for any non-slot discovered pages (ZERO Gemini API calls!)
+      const shouldAcquire = options?.acquireAssets ?? true;
+      if (
+        shouldAcquire &&
+        discovery.pages.length > 0 &&
+        typeof browser !== "undefined" &&
+        typeof browser.runtime?.sendMessage === "function"
+      ) {
+        const unacquired = discovery.pages.filter(
+          (p) => !p.isAcquired && !p.isPersisted && !!p.src,
+        );
+        if (unacquired.length > 0) {
+          try {
+            await acquireChapterAssets(unacquired, this.chapterKey);
+          } catch (e) {
+            console.warn("[LMT Chapter Diagnostic] Asset acquisition encountered warning:", e);
+          }
         }
       }
-    }
 
-    let verdict: CollectorVerdict = "READY_FOR_OWNER_RETEST";
-    let message = `All ${expectedCount} expected pages discovered, acquired, and persisted in correct order without DOM dependency (${discovery.strategy || "slot_discovery"}).`;
+      const storedPages = await getChapterPages(this.chapterKey);
 
-    if (expectedCount <= 0) {
-      verdict = "UNKNOWN_EXPECTED_COUNT";
-      message = `Found ${discoveredCount} pages, but expected page count could not be extracted from reader metadata.`;
-    } else if (discoveredCount < expectedCount) {
-      verdict = "INCOMPLETE_DISCOVERY";
-      message = `Incomplete discovery: found ${discoveredCount} of ${expectedCount} pages (missing pages: ${missingPageNumbers.join(", ")}).`;
-    } else if (acquiredCount < expectedCount && persistedCount < expectedCount) {
-      verdict = "PARTIAL_WITH_VERIFIED_BLOCKERS";
-      message = `${discoveredCount - Math.max(acquiredCount, persistedCount)} of ${discoveredCount} pages could not be acquired or persisted.`;
-    }
+      const pagesInfo = discovery.pages.map((p) => {
+        const isMounted = p.element
+          ? typeof document !== "undefined" && document.body?.contains(p.element)
+          : findMountedImage(p.src) !== null;
+        const stored = storedPages.find(
+          (sp) =>
+            sp.pageIndex === p.pageIndex ||
+            sp.src === p.src ||
+            sp.src === p.srcKey,
+        );
+        const isPersisted = !!(
+          stored?.originalDataUrl ||
+          stored?.renderedDataUrl ||
+          (p.isPersisted && p.isAcquired)
+        );
+        const isStoredDone = stored?.status === "done" && stored.verified;
+        const isUsableAsset = isPersisted || (isMounted && !!p.src);
 
-    const identity = extractChapterIdentity(document);
-    const result: ChapterDiagnosticResult = {
-      seriesName: this.seriesName,
-      chapterId: this.chapterId,
-      chapterInternalId: identity.chapterInternalId,
-      chapterTitle: this.chapterTitle,
-      url: typeof window !== "undefined" ? window.location.href : "",
-      strategy: discovery.strategy || "slot_discovery",
-      expectedCount,
-      discoveredCount,
-      mountedCount,
-      acquiredCount,
-      persistedCount,
-      usableAssetCount,
-      missingPageNumbers,
-      pages: pagesInfo,
-      verdict,
-      message,
-      timestamp: Date.now(),
-    };
+        return {
+          pageNumber: p.pageNumber,
+          pageIndex: p.pageIndex,
+          src: p.src,
+          isMounted,
+          isAcquired: isPersisted,
+          isPersisted,
+          isUsableAsset,
+          hasCachedTranslation: isStoredDone,
+          fetchStatus: p.fetchStatus ?? (isPersisted ? "cached" : undefined),
+          error: p.error ?? (stored as any)?.error,
+          width: stored?.width ?? p.width,
+          height: stored?.height ?? p.height,
+          byteLength: stored?.byteLength ?? p.byteLength,
+          hash: stored?.hash ?? p.hash,
+        };
+      });
 
-    console.group(`[LMT Chapter Diagnostic] ${this.chapterTitle || "Chapter"}`);
-    console.info(
-      `Expected: ${expectedCount || "UNKNOWN"} | Discovered: ${discoveredCount} | Mounted: ${mountedCount} | Acquired: ${acquiredCount} | Persisted: ${persistedCount} | Verdict: ${verdict}`,
-    );
-    if (typeof console.table === "function") {
-      console.table(
-        pagesInfo.map((p) => ({
-          "Page #": p.pageNumber,
-          Mounted: p.isMounted ? "YES" : "NO",
-          Acquired: p.isAcquired ? "YES" : "NO",
-          Usable: p.isUsableAsset ? "YES" : "NO",
-          Dimensions:
-            p.width && p.height ? `${p.width}x${p.height}` : "—",
-          Bytes: p.byteLength
-            ? `${Math.round(p.byteLength / 1024)} KB`
-            : "—",
-          "Source URL":
-            p.src.length > 50 ? p.src.substring(0, 47) + "..." : p.src,
-        })),
+      const expectedCount = discovery.expectedCount;
+      const discoveredCount = discovery.discoveredCount;
+      const mountedCount = pagesInfo.filter((p) => p.isMounted).length;
+      const persistedCount = pagesInfo.filter((p) => p.isPersisted).length;
+      const acquiredCount = persistedCount;
+      const usableAssetCount = pagesInfo.filter((p) => p.isUsableAsset).length;
+
+      // Determine missing page numbers
+      const discoveredPageNumbers = new Set(
+        pagesInfo.filter((p) => !!p.src).map((p) => p.pageNumber),
       );
-    }
-    console.groupEnd();
+      const missingPageNumbers: number[] = [];
+      if (expectedCount > 0) {
+        for (let i = 1; i <= expectedCount; i++) {
+          if (!discoveredPageNumbers.has(i)) {
+            missingPageNumbers.push(i);
+          }
+        }
+      }
 
-    if (typeof document !== "undefined") {
-      document.dispatchEvent(
-        new CustomEvent("lmt:chapter-prep-diagnostic-result", {
-          detail: result,
-        }),
+      // M1.4.5.1 STRICT INDEPENDENT VERIFICATION:
+      // A successful result requires, independently:
+      // - Expected N pages (> 0)
+      // - N unique ordered IDs (missingPageNumbers.length === 0 && discoveredCount === expectedCount)
+      // - N fetched and decodable page images
+      // - N matching valid persisted assets
+      const isStrictlyComplete =
+        expectedCount > 0 &&
+        discoveredCount === expectedCount &&
+        acquiredCount === expectedCount &&
+        persistedCount === expectedCount &&
+        missingPageNumbers.length === 0;
+
+      let verdict: CollectorVerdict = "PARTIAL_WITH_BLOCKERS";
+      let message = "";
+
+      if (expectedCount <= 0) {
+        verdict = "UNKNOWN_EXPECTED_COUNT";
+        message = `Found ${discoveredCount} pages, but expected page count could not be extracted from reader metadata.`;
+      } else if (discoveredCount < expectedCount || missingPageNumbers.length > 0) {
+        verdict = "INCOMPLETE_DISCOVERY";
+        message = `Incomplete discovery: found ${discoveredCount} of ${expectedCount} pages (missing pages: ${missingPageNumbers.join(", ")}).`;
+      } else if (acquiredCount < expectedCount || persistedCount < expectedCount) {
+        verdict = "PARTIAL_WITH_BLOCKERS";
+        const unpersisted = expectedCount - persistedCount;
+        message = `Incomplete persistence: ${unpersisted} of ${expectedCount} pages have not been durably acquired or persisted to IndexedDB.`;
+      } else if (isStrictlyComplete) {
+        verdict = "READY_FOR_OWNER_ZERO_API_RETEST";
+        message = `All ${expectedCount} expected pages discovered, verified, acquired, and durably persisted in correct order (1..${expectedCount}) with valid binary assets and zero Gemini API calls (${discovery.strategy || "slot_discovery"}).`;
+      }
+
+      const identity = extractChapterIdentity(document);
+      const result: ChapterDiagnosticResult = {
+        seriesName: this.seriesName,
+        chapterId: this.chapterId,
+        chapterInternalId: identity.chapterInternalId,
+        chapterTitle: this.chapterTitle,
+        url: typeof window !== "undefined" ? window.location.href : "",
+        strategy: discovery.strategy || "slot_discovery",
+        expectedCount,
+        discoveredCount,
+        mountedCount,
+        acquiredCount,
+        persistedCount,
+        usableAssetCount,
+        missingPageNumbers,
+        pages: pagesInfo,
+        verdict,
+        message,
+        timestamp: Date.now(),
+      };
+
+      console.group(`[LMT Chapter Diagnostic] ${this.chapterTitle || "Chapter"}`);
+      console.info(
+        `Expected: ${expectedCount || "UNKNOWN"} | Discovered: ${discoveredCount} | Mounted: ${mountedCount} | Acquired: ${acquiredCount} | Persisted: ${persistedCount} | Verdict: ${verdict}`,
       );
-    }
+      if (typeof console.table === "function") {
+        console.table(
+          pagesInfo.map((p) => ({
+            "Page #": p.pageNumber,
+            Mounted: p.isMounted ? "YES" : "NO",
+            Acquired: p.isAcquired ? "YES" : "NO",
+            Persisted: p.isPersisted ? "YES" : "NO",
+            Status: p.fetchStatus ?? "—",
+            Dimensions:
+              p.width && p.height ? `${p.width}x${p.height}` : "—",
+            Bytes: p.byteLength
+              ? `${Math.round(p.byteLength / 1024)} KB`
+              : "—",
+            Error: p.error || "none",
+            "Source URL":
+              p.src.length > 50 ? p.src.substring(0, 47) + "..." : p.src,
+          })),
+        );
+      }
+      console.groupEnd();
 
-    return result;
+      if (typeof document !== "undefined") {
+        document.dispatchEvent(
+          new CustomEvent("lmt:chapter-prep-diagnostic-result", {
+            detail: result,
+          }),
+        );
+      }
+
+      return result;
+    } finally {
+      // Restore owner reader preferences snapshot to ensure zero persistent side effects
+      restoreComixNativeSettings();
+    }
   }
 
   exportDiagnosticJson(diag?: ChapterDiagnosticResult): string {

@@ -74,6 +74,8 @@ const {
   acquireChapterAssets,
   ChapterPreparationManager,
   applyComixNativePreload,
+  restoreComixNativeSettings,
+  isComixSite,
   discoverSlotBasedPages,
 } = await import("@/entrypoints/content/chapter-prep");
 
@@ -1345,7 +1347,7 @@ describe("Complete Chapter Collection & Offline Artifacts (M1.4 & M1.4.1)", () =
       expect(diag.acquiredCount).toBe(22);
       expect(diag.persistedCount).toBe(22);
       expect(diag.missingPageNumbers).toEqual([]);
-      expect(["READY_FOR_OWNER_RETEST", "READY_FOR_OWNER_BROWSER_ACCEPTANCE"]).toContain(diag.verdict);
+      expect(["READY_FOR_OWNER_ZERO_API_RETEST", "READY_FOR_OWNER_RETEST", "READY_FOR_OWNER_BROWSER_ACCEPTANCE"]).toContain(diag.verdict);
 
       const jsonStr = manager.exportDiagnosticJson(diag);
       expect(jsonStr).toContain(`"verdict": "${diag.verdict}"`);
@@ -1357,7 +1359,7 @@ describe("Complete Chapter Collection & Offline Artifacts (M1.4 & M1.4.1)", () =
   });
 
   describe("M1.4.5 Evidence-Driven Comix.to Collector Recovery Acceptance Tests", () => {
-    it("M1.4.5 Test 1: applyComixNativePreload updates reader localStorage keys to preload 'all'", () => {
+    it("M1.4.5 Test 1: applyComixNativePreload updates versioned Zustand reader localStorage keys", () => {
       const storageMap = new Map<string, string>();
       const mockStorage = {
         getItem: (k: string) => storageMap.get(k) ?? null,
@@ -1369,20 +1371,26 @@ describe("Complete Chapter Collection & Offline Artifacts (M1.4 & M1.4.1)", () =
       // Initially no keys
       const modified1 = applyComixNativePreload();
       expect(modified1).toBe(true);
-      expect(JSON.parse(storageMap.get("reader.default.v3")!).preload).toBe("all");
-      expect(JSON.parse(storageMap.get("reader.webtoon.v3")!).preload).toBe("all");
+      expect(JSON.parse(storageMap.get("reader.default.v3")!).state.preload).toBe("all");
+      expect(JSON.parse(storageMap.get("reader.default.v3")!).version).toBe(3);
+      expect(JSON.parse(storageMap.get("reader.webtoon.v3")!).state.preload).toBe("all");
 
-      // Key exists with preload: 'view'
-      storageMap.set("reader.default.v3", JSON.stringify({ preload: "view", fit: "width" }));
+      // Key exists with versioned fixture
+      storageMap.set(
+        "reader.default.v3",
+        JSON.stringify({ state: { preload: "view", fit: "width" }, version: 3 }),
+      );
       const modified2 = applyComixNativePreload();
       expect(modified2).toBe(true);
       const parsed = JSON.parse(storageMap.get("reader.default.v3")!);
-      expect(parsed.preload).toBe("all");
-      expect(parsed.fit).toBe("width");
+      expect(parsed.state.preload).toBe("all");
+      expect(parsed.state.fit).toBe("width");
+      expect(parsed.version).toBe(3);
 
       // Already 'all'
       const modified3 = applyComixNativePreload();
       expect(modified3).toBe(false);
+      restoreComixNativeSettings();
     });
 
     it("M1.4.5 Test 2: discoverSlotBasedPages discovers .rpage-page slots in strict 1..N order", async () => {
@@ -1446,6 +1454,168 @@ describe("Complete Chapter Collection & Offline Artifacts (M1.4 & M1.4.1)", () =
       expect(identity.chapterId).toBe("54");
       expect(identity.chapterInternalId).toBe("3196390");
       expect(identity.chapterTitle).toBe("Zipang · Ch.54");
+    });
+  });
+
+  describe("M1.4.5.1 Targeted Correction Acceptance Tests", () => {
+    it("M1.4.5.1 Test 1: restoreComixNativeSettings reliably restores owner preferences and cleans snapshot", () => {
+      const storageMap = new Map<string, string>();
+      const mockStorage = {
+        getItem: (k: string) => storageMap.get(k) ?? null,
+        setItem: (k: string, v: string) => storageMap.set(k, v),
+        removeItem: (k: string) => storageMap.delete(k),
+      };
+      (globalThis as any).window.localStorage = mockStorage;
+
+      const initialVal = JSON.stringify({ state: { preload: "view", fit: "width" }, version: 3 });
+      storageMap.set("reader.default.v3", initialVal);
+
+      // Modify via apply
+      applyComixNativePreload();
+      expect(JSON.parse(storageMap.get("reader.default.v3")!).state.preload).toBe("all");
+
+      // Restore
+      const restored = restoreComixNativeSettings();
+      expect(restored).toBe(true);
+      expect(storageMap.get("reader.default.v3")).toBe(initialVal);
+      expect(storageMap.has("reader.webtoon.v3")).toBe(false);
+    });
+
+    it("M1.4.5.1 Test 2: Scope isolation: non-Comix origin leaves localStorage untouched and returns false", () => {
+      const storageMap = new Map<string, string>();
+      const mockStorage = {
+        getItem: (k: string) => storageMap.get(k) ?? null,
+        setItem: (k: string, v: string) => storageMap.set(k, v),
+        removeItem: (k: string) => storageMap.delete(k),
+      };
+      (globalThis as any).window.localStorage = mockStorage;
+
+      const originalLocation = (globalThis as any).window.location;
+      (globalThis as any).window.location = new URL("https://mangadex.org/title/123-test");
+
+      const modified = applyComixNativePreload();
+      expect(modified).toBe(false);
+      expect(storageMap.size).toBe(0);
+
+      // Restore location
+      (globalThis as any).window.location = originalLocation;
+    });
+
+    it("M1.4.5.1 Test 3: Page-by-page observable loading and immediate persistence", async () => {
+      await clearInMemoryStore();
+      const chapterKey = "MANGA_ZIPANG_TEST_054";
+
+      document.body.innerHTML = `
+        <div class="rpage-main" style="height: 1000px; overflow-y: scroll;">
+          <div class="rpage-page" data-page="1"><img class="rpage-page__img" src="https://rxn.cdn.site/z54/p01.webp" width="800" height="1200" /></div>
+          <div class="rpage-page" data-page="2"><img class="rpage-page__img" src="https://rxn.cdn.site/z54/p02.webp" width="800" height="1200" /></div>
+        </div>
+      `;
+
+      const pages = await discoverSlotBasedPages(document, null, {
+        expectedCount: 2,
+        chapterKey,
+      });
+
+      expect(pages).not.toBeNull();
+      expect(pages!.length).toBe(2);
+      expect(pages![0].isPersisted).toBe(true);
+      expect(pages![1].isPersisted).toBe(true);
+
+      const storedPages = await getChapterPages(chapterKey);
+      expect(storedPages.length).toBe(2);
+    });
+
+    it("M1.4.5.1 Test 4: Strict Diagnostic: Incomplete persistence strictly fails (never false-green)", async () => {
+      await clearInMemoryStore();
+      document.body.innerHTML = `
+        <div class="rpage-main">
+          <div class="rpage-page" data-page="1"><img class="rpage-page__img" src="https://rxn.cdn.site/z54/p01.webp" width="800" height="1200" /></div>
+          <div class="rpage-page" data-page="2"><img class="rpage-page__img" src="https://rxn.cdn.site/z54/p02.webp" width="800" height="1200" /></div>
+        </div>
+      `;
+
+      // Set mock failure for page 2 saving to simulate quota/storage error
+      setMockSavePageFailureHook((page) => {
+        if (page.pageNumber === 2) {
+          throw new Error("IndexedDB Disk Quota Exceeded");
+        }
+        return null;
+      });
+
+      const manager = new ChapterPreparationManager({
+        getActiveRule: () => null,
+        enqueueManual: () => {},
+      } as any);
+
+      const diag = await manager.runDiagnostic({ acquireAssets: false });
+      setMockSavePageFailureHook(null);
+
+      // Even if discovered is 2, because 1 failed to persist, verdict MUST NOT be ready!
+      expect(diag.persistedCount).toBeLessThan(diag.expectedCount);
+      expect(diag.verdict).toBe("PARTIAL_WITH_BLOCKERS");
+      expect(diag.verdict).not.toBe("READY_FOR_OWNER_ZERO_API_RETEST");
+      manager.destroy();
+    });
+
+    it("M1.4.5.1 Test 5: Strict Diagnostic: All expected pages verified & persisted reports READY_FOR_OWNER_ZERO_API_RETEST with 0 Gemini API calls", async () => {
+      await clearInMemoryStore();
+      document.body.innerHTML = `
+        <div class="rpage-main">
+          <div class="rpage-page" data-page="1"><img class="rpage-page__img" src="https://rxn.cdn.site/z54/p01.webp" width="800" height="1200" /></div>
+          <div class="rpage-page" data-page="2"><img class="rpage-page__img" src="https://rxn.cdn.site/z54/p02.webp" width="800" height="1200" /></div>
+        </div>
+      `;
+
+      const inferenceCalls: any[] = [];
+      const manager = new ChapterPreparationManager({
+        getActiveRule: () => null,
+        enqueueManual: (el: any) => inferenceCalls.push(el),
+      } as any);
+
+      const diag = await manager.runDiagnostic();
+      expect(inferenceCalls.length).toBe(0); // ZERO Gemini API calls!
+      expect(diag.expectedCount).toBe(2);
+      expect(diag.discoveredCount).toBe(2);
+      expect(diag.acquiredCount).toBe(2);
+      expect(diag.persistedCount).toBe(2);
+      expect(diag.missingPageNumbers).toEqual([]);
+      expect(diag.verdict).toBe("READY_FOR_OWNER_ZERO_API_RETEST");
+
+      manager.destroy();
+    });
+
+    it("M1.4.5.1 Test 6: Accurate per-page acquisition error and HTTP status reporting", async () => {
+      await clearInMemoryStore();
+      const originalSendMessage = (globalThis as any).browser.runtime.sendMessage;
+
+      // Mock 403 HTTP error from background proxy
+      (globalThis as any).browser.runtime.sendMessage = (msg: any) => {
+        if (msg.type === "FETCH_CHAPTER_PAGE_IMAGE") {
+          return Promise.resolve({
+            success: false,
+            httpStatus: 403,
+            error: "HTTP fetch failed with status 403: Forbidden",
+          });
+        }
+        return originalSendMessage(msg);
+      };
+
+      const testPage = {
+        pageNumber: 1,
+        pageIndex: 0,
+        src: "https://rxn.cdn.site/manga/p01.webp",
+        srcKey: "https://rxn.cdn.site/manga/p01.webp",
+        isMounted: false,
+        isUsableAsset: false,
+      };
+
+      const res = await acquirePageAsset(testPage, "TEST_ERR_KEY");
+      expect(res.success).toBe(false);
+      expect(res.fetchStatus).toBe(403);
+      expect(res.error).toContain("403");
+
+      (globalThis as any).browser.runtime.sendMessage = originalSendMessage;
     });
   });
 });
