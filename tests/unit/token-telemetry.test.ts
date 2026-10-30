@@ -79,4 +79,52 @@ describe("Gemini Token Telemetry (M1.4 ACTION D)", () => {
     expect(validated.usageMetadata?.candidatesTokenCount).toBe(340);
     expect(validated.usageMetadata?.totalTokenCount).toBe(2440);
   });
+
+  it("M1.5.1 Section 4: candidatesTokenCount and thoughtsTokenCount are separate metrics and never subtracted", async () => {
+    // When Gemini Thinking generates reasoning tokens, thoughtsTokenCount is reported alongside candidatesTokenCount
+    const mockThinkingUsage = {
+      promptTokenCount: 1800,
+      candidatesTokenCount: 500,
+      thoughtsTokenCount: 320,
+      totalTokenCount: 2620,
+    };
+
+    globalThis.fetch = mock(async () => {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      translations: ["แปล 1"],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+          usageMetadata: mockThinkingUsage,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as any;
+
+    const res = await sendRequestToGemini(
+      "system prompt",
+      "user prompt",
+      "valid-key-xyz",
+      "gemini-3.8-flash",
+      0.2,
+    );
+
+    expect(res.usageMetadata).toBeDefined();
+    // Distinct, un-subtracted instrumented counters
+    expect(res.usageMetadata.candidatesTokenCount).toBe(500);
+    expect(res.usageMetadata.thoughtsTokenCount).toBe(320);
+    expect(res.usageMetadata.totalTokenCount).toBe(2620);
+    // Explicitly verify they are NOT subtracted (i.e. candidatesTokenCount is not 500 - 320 = 180)
+    expect(res.usageMetadata.candidatesTokenCount).not.toBe(500 - 320);
+  });
 });

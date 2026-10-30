@@ -1,12 +1,11 @@
 /**
- * Local Manga Corpus Adapter (M1.5.1 Section F)
+ * Local Manga Corpus Adapter (M1.5.1 Integration Correction)
  *
- * Provides portable access to manga page assets for benchmark preflight
- * and offline testing without machine-specific hardcoded absolute paths.
- *
- * Priority:
- * 1. Discovers locally cached Chrome IndexedDB blob assets under %LOCALAPPDATA%
- * 2. Falls back to verified test assets in tests/assets/
+ * Strict Authentic Corpus Contract:
+ * - getZipangCorpusPages() requires exactly 22 authentic Zipang Chapter 54 page assets.
+ * - Throws an explicit error if authentic assets are missing, incomplete (<22), or corrupted.
+ * - PROHIBITS silent substitution of unrelated fixtures for live benchmarks (AGENTS.md).
+ * - Synthetic/mock assets are strictly segregated into getMockCorpusPages() for unit tests.
  */
 
 import fs from "fs";
@@ -26,10 +25,14 @@ export interface ExtractedCorpusPage {
   base64Data?: string;
 }
 
+export const EXPECTED_ZIPANG_54_PAGE_COUNT = 22;
+
 export function getZipangCorpusPages(): ExtractedCorpusPage[] {
   const localAppData = process.env.LOCALAPPDATA;
   if (!localAppData) {
-    return getFallbackCorpusPages();
+    throw new Error(
+      `AUTHENTIC CORPUS FAILURE: LOCALAPPDATA environment variable is missing. Cannot locate authentic Zipang Ch. 54 corpus. Silently substituting fallback fixtures is strictly prohibited.`,
+    );
   }
 
   const blobDir = path.join(
@@ -45,7 +48,9 @@ export function getZipangCorpusPages(): ExtractedCorpusPage[] {
   );
 
   if (!fs.existsSync(blobDir)) {
-    return getFallbackCorpusPages();
+    throw new Error(
+      `AUTHENTIC CORPUS FAILURE: Blob directory not found at '${blobDir}'. Authentic Zipang Ch. 54 assets are missing. Silently substituting fallback fixtures is strictly prohibited.`,
+    );
   }
 
   const files = fs
@@ -91,10 +96,21 @@ export function getZipangCorpusPages(): ExtractedCorpusPage[] {
   }
 
   extracted.sort((a, b) => a.pageIndex - b.pageIndex);
-  return extracted.length > 0 ? extracted : getFallbackCorpusPages();
+
+  if (extracted.length !== EXPECTED_ZIPANG_54_PAGE_COUNT) {
+    throw new Error(
+      `AUTHENTIC CORPUS FAILURE: Zipang Chapter 54 benchmark strictly requires exactly ${EXPECTED_ZIPANG_54_PAGE_COUNT} authentic page assets (found ${extracted.length}). Silently substituting fallback fixtures is prohibited by AGENTS.md.`,
+    );
+  }
+
+  return extracted;
 }
 
-function getFallbackCorpusPages(): ExtractedCorpusPage[] {
+/**
+ * Explicit helper for synthetic/mock tests.
+ * NEVER called as a silent fallback by getZipangCorpusPages().
+ */
+export function getMockCorpusPages(): ExtractedCorpusPage[] {
   const assetsDir = path.resolve(process.cwd(), "tests/assets");
   if (!fs.existsSync(assetsDir)) return [];
 
@@ -116,8 +132,8 @@ function getFallbackCorpusPages(): ExtractedCorpusPage[] {
 
     pages.push({
       file,
-      id: `test_corpus_page_${index}`,
-      chapterKey: "test_corpus",
+      id: `mock_corpus_page_${index}`,
+      chapterKey: "mock_corpus",
       pageIndex: index,
       pageNumber: index + 1,
       src: `file://${p}`,

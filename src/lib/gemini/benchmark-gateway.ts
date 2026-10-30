@@ -61,6 +61,28 @@ export interface BenchmarkLedgerState {
   entries: LedgerEntry[];
 }
 
+export function resolveDefaultLedgerPath(): string {
+  if (process.env.BENCHMARK_LEDGER_PATH && process.env.BENCHMARK_LEDGER_PATH.trim().length > 0) {
+    return path.resolve(process.env.BENCHMARK_LEDGER_PATH.trim());
+  }
+  // Search upward from current working directory to project root containing package.json or benchmark-ledger.json
+  let dir = process.cwd();
+  for (let i = 0; i < 5; i++) {
+    const candidateLedger = path.join(dir, "benchmark-ledger.json");
+    const packageJson = path.join(dir, "package.json");
+    if (fs.existsSync(candidateLedger)) {
+      return path.resolve(candidateLedger);
+    }
+    if (fs.existsSync(packageJson)) {
+      return path.resolve(candidateLedger);
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return path.resolve(process.cwd(), "benchmark-ledger.json");
+}
+
 export class BenchmarkTransportGateway {
   public readonly ledgerPath: string;
   public readonly lockFilePath: string;
@@ -69,9 +91,9 @@ export class BenchmarkTransportGateway {
   private readonly MAX_MISSION_ATTEMPTS = 3;
 
   constructor(customLedgerPath?: string) {
-    this.ledgerPath =
-      customLedgerPath ||
-      path.resolve(process.cwd(), "benchmark-ledger.json");
+    this.ledgerPath = customLedgerPath
+      ? path.resolve(customLedgerPath)
+      : resolveDefaultLedgerPath();
     this.lockFilePath = `${this.ledgerPath}.lock`;
   }
 

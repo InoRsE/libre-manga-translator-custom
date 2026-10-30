@@ -55,10 +55,12 @@ function buildProductionPrompts(pageCount: number, bboxesPerPage: number = 8) {
   }));
 
   const systemPrompt = `You are a professional manga translator working on "Zipang".
+The source manga scanlation is in ENGLISH. Your task is to translate all dialogue into natural, accurate, immersive THAI (ภาษาไทย).
+Target Workflow: English dialogue -> Thai translation (EN->TH).
 You are provided with ${pageCount} sequential manga pages in reading order: ${dummyPages.map((p, idx) => `Page ${idx + 1} (ID: "${p.pageId}")`).join(", ")}.
 Each page has red numbered bounding boxes marking dialogue regions (numbered starting from 1 on EACH page).
-Translate the text in the numbered bounding boxes for each page FROM JAPANESE INTO THAI.
-Maintain the tone, continuity, and context across the scene between all pages.
+Translate the text in the numbered bounding boxes for each page FROM ENGLISH INTO THAI.
+Maintain the military/naval terminology, tone, continuity, and context across the scene between all pages.
 
 CRITICAL INSTRUCTIONS:
 1. Output strictly valid JSON matching this schema:
@@ -67,15 +69,15 @@ CRITICAL INSTRUCTIONS:
 ${dummyPages
   .map(
     (p) =>
-      `    {\n      "pageId": "${p.pageId}",\n      "translations": [${p.bboxes.map((_, b) => `"translation for box ${b + 1}"`).join(", ")}],\n      "sourceTexts": [${p.bboxes.map((_, b) => `"original text in box ${b + 1}"`).join(", ")}]\n    }`,
+      `    {\n      "pageId": "${p.pageId}",\n      "translations": [${p.bboxes.map((_, b) => `"คำแปลสำหรับกล่องที่ ${b + 1}"`).join(", ")}],\n      "sourceTexts": [${p.bboxes.map((_, b) => `"original English text in box ${b + 1}"`).join(", ")}]\n    }`,
   )
   .join(",\n")}
   ]
 }
 2. The "translations" array for each page MUST match the EXACT number of bounding boxes for that page:
 ${dummyPages.map((p) => `   - Page "${p.pageId}": exactly ${p.bboxes.length} items`).join("\n")}
-3. Dialogue inside "translations" MUST be strictly in THAI. DO NOT copy or transcribe the original untranslated text into "translations".
-4. "sourceTexts" MUST contain the original text transcribed verbatim from the boxes.
+3. Dialogue inside "translations" MUST be strictly in THAI. The source text is English scanlation.
+4. "sourceTexts" MUST contain the original English text transcribed verbatim from the boxes.
 5. NEVER mix up or swap dialogue between pages. Maintain strict page assignment.
 6. If a box is empty, illegible, or has no text, use "" in translations and sourceTexts.
 `;

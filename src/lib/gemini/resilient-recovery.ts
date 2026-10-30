@@ -172,7 +172,7 @@ export function recoverValidatedBatchPages(
       continue;
     }
 
-    // Check types
+    // Check types for translations
     let validTranslations = true;
     const cleanTranslations: string[] = [];
     for (const t of candidate.translations) {
@@ -184,36 +184,44 @@ export function recoverValidatedBatchPages(
     }
     if (!validTranslations) continue;
 
-    // Check sourceTexts if provided
-    let cleanSourceTexts: string[] | undefined = undefined;
-    if (Array.isArray(candidate.sourceTexts)) {
-      const matchCount = expected.expectedCount >= 0 ? expected.expectedCount : cleanTranslations.length;
-      if (candidate.sourceTexts.length === matchCount) {
-        cleanSourceTexts = candidate.sourceTexts.map((s: any) =>
-          typeof s === "string" ? s : String(s || ""),
-        );
-      }
+    // M1.5.1 Section 2: sourceTexts MUST be present and an array matching dialogue count
+    if (!Array.isArray(candidate.sourceTexts)) {
+      continue; // Reject record if sourceTexts is missing or not an array
     }
 
-    // Truthful completeness: if source text exists, translation cannot be silently empty
-    if (cleanSourceTexts) {
-      let droppedDialogue = false;
-      const countToCheck = expected.expectedCount >= 0 ? expected.expectedCount : cleanTranslations.length;
-      for (let i = 0; i < countToCheck; i++) {
-        const src = cleanSourceTexts[i]?.trim();
-        const trans = cleanTranslations[i]?.trim();
-        if (src && src.length > 0 && (!trans || trans.length === 0)) {
-          droppedDialogue = true;
-          break;
-        }
-      }
-      if (droppedDialogue) continue; // Reject incomplete translation
+    const requiredCount = expected.expectedCount >= 0 ? expected.expectedCount : cleanTranslations.length;
+    if (candidate.sourceTexts.length !== requiredCount || cleanTranslations.length !== requiredCount) {
+      continue; // Reject record on length mismatch
     }
+
+    // Check types for sourceTexts
+    let validSourceTexts = true;
+    const cleanSourceTexts: string[] = [];
+    for (const s of candidate.sourceTexts) {
+      if (s === null || s === undefined || typeof s !== "string") {
+        validSourceTexts = false;
+        break;
+      }
+      cleanSourceTexts.push(s);
+    }
+    if (!validSourceTexts) continue;
+
+    // Truthful completeness: if source text exists, translation cannot be silently empty
+    let droppedDialogue = false;
+    for (let i = 0; i < requiredCount; i++) {
+      const src = cleanSourceTexts[i].trim();
+      const trans = cleanTranslations[i].trim();
+      if (src.length > 0 && trans.length === 0) {
+        droppedDialogue = true;
+        break;
+      }
+    }
+    if (droppedDialogue) continue; // Reject incomplete translation
 
     completedPages.push({
       pageId: pid,
       translations: cleanTranslations,
-      ...(cleanSourceTexts ? { sourceTexts: cleanSourceTexts } : {}),
+      sourceTexts: cleanSourceTexts,
     });
     seenIds.add(pid);
   }

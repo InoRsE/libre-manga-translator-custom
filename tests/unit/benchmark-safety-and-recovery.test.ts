@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import fs from "fs";
 import path from "path";
+import { spawnSync } from "child_process";
 import {
   BenchmarkTransportGateway,
   type BenchmarkLedgerState,
@@ -10,6 +11,12 @@ import {
   recoverValidatedBatchPages,
 } from "../../src/lib/gemini/resilient-recovery";
 import type { ExpectedBatchPage } from "../../src/lib/server/validator";
+import {
+  getZipangCorpusPages,
+  getMockCorpusPages,
+  EXPECTED_ZIPANG_54_PAGE_COUNT,
+} from "../../scripts/corpus-adapter";
+import { ZIPANG_54_PAGE_DIALOGUE_REGIONS } from "../../scripts/run-trial-1";
 
 const TEST_LEDGER_PATH = path.resolve(process.cwd(), "test-benchmark-ledger.json");
 const TEST_LOCK_PATH = `${TEST_LEDGER_PATH}.lock`;
@@ -290,6 +297,79 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5.1)", () => {
       await p1;
     });
 
+    it("Cross-process lock -> Blocks independent operating system process from concurrent dispatch", () => {
+      // Main process holds lock file on disk
+      const lockFd = fs.openSync(TEST_LOCK_PATH, "wx");
+      try {
+        const escapedLedger = TEST_LEDGER_PATH.replace(/\\/g, "\\\\");
+        const childScript = `
+          import { BenchmarkTransportGateway } from "./src/lib/gemini/benchmark-gateway";
+          const gw = new BenchmarkTransportGateway("${escapedLedger}");
+          try {
+            await gw.executeBenchmarkInference({
+              experimentId: "exp-os",
+              trialId: "trial-os-child",
+              apiKey: "key",
+              systemPrompt: "s",
+              userPrompt: "u",
+              parts: [],
+              expectedPages: [{ pageId: "p1", expectedCount: 1 }],
+            });
+            process.exit(0);
+          } catch (e) {
+            if (/cross-process/i.test(e.message)) {
+              process.exit(42);
+            }
+            console.error("Unexpected child error:", e);
+            process.exit(1);
+          }
+        `;
+        const res = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
+        expect(res.status).toBe(42);
+      } finally {
+        fs.closeSync(lockFd);
+        if (fs.existsSync(TEST_LOCK_PATH)) fs.unlinkSync(TEST_LOCK_PATH);
+      }
+    });
+
+    it("Independent OS process -> Budget exhausted blocks external process without API call", () => {
+      fs.writeFileSync(
+        TEST_LEDGER_PATH,
+        JSON.stringify({
+          missionBudgetLimit: 3,
+          missionAttemptsConsumed: 3,
+          entries: [],
+        }),
+        "utf8",
+      );
+
+      const escapedLedger = TEST_LEDGER_PATH.replace(/\\/g, "\\\\");
+      const childScript = `
+        import { BenchmarkTransportGateway } from "./src/lib/gemini/benchmark-gateway";
+        const gw = new BenchmarkTransportGateway("${escapedLedger}");
+        try {
+          await gw.executeBenchmarkInference({
+            experimentId: "exp-os-budget",
+            trialId: "trial-os-exhausted",
+            apiKey: "key",
+            systemPrompt: "s",
+            userPrompt: "u",
+            parts: [],
+            expectedPages: [{ pageId: "p1", expectedCount: 1 }],
+          });
+          process.exit(0);
+        } catch (e) {
+          if (/Mission budget exhausted/i.test(e.message)) {
+            process.exit(99);
+          }
+          console.error("Unexpected child error:", e);
+          process.exit(1);
+        }
+      `;
+      const res = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
+      expect(res.status).toBe(99);
+    });
+
     it("Fail-closed handling of corrupted ledger -> Throws fatal error, never resets budget", () => {
       // Intentionally corrupt the ledger file on disk
       fs.writeFileSync(TEST_LEDGER_PATH, "{ missionAttemptsConsumed: 2, corrupt json ...", "utf8");
@@ -394,8 +474,25 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5.1)", () => {
       expect(recovery.unfinishedPageIds).toContain("p2");
     });
 
-    it("Missing or invalid sourceTexts array -> Discards incomplete record", () => {
+    it("Missing sourceTexts array -> Discards incomplete record (excluded from completedPages)", () => {
       const missingSourceTextsJson = `
+      {
+        "pages": [
+          {
+            "pageId": "p1",
+            "translations": ["แปล 1", "แปล 2"]
+          }
+        ]
+      }`;
+
+      const recovery = recoverValidatedBatchPages(missingSourceTextsJson, expectedPages.slice(0, 1));
+      // M1.5.1 Correction: missing sourceTexts causes immediate rejection from completedPages
+      expect(recovery.completedPages.length).toBe(0);
+      expect(recovery.unfinishedPageIds).toContain("p1");
+    });
+
+    it("Mismatched sourceTexts length -> Discards incomplete record (excluded from completedPages)", () => {
+      const mismatchedSourceTextsJson = `
       {
         "pages": [
           {
@@ -406,9 +503,10 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5.1)", () => {
         ]
       }`;
 
-      const recovery = recoverValidatedBatchPages(missingSourceTextsJson, expectedPages.slice(0, 1));
-      // Length of sourceTexts (1) does not match expectedCount (2)
-      expect(recovery.completedPages[0].sourceTexts).toBeUndefined();
+      const recovery = recoverValidatedBatchPages(mismatchedSourceTextsJson, expectedPages.slice(0, 1));
+      // Length of sourceTexts (1) does not match expectedCount (2) -> rejected
+      expect(recovery.completedPages.length).toBe(0);
+      expect(recovery.unfinishedPageIds).toContain("p1");
     });
 
     it("Conflicting / Duplicate page records -> Discards duplicate", () => {
@@ -440,6 +538,51 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5.1)", () => {
       expect(recovery.unfinishedPageIds.length).toBe(0);
       expect(recovery.isFullyComplete).toBe(true);
       expect(recovery.isTruncated).toBe(false);
+    });
+  });
+
+  // ==========================================================================
+  // SECTION F: AUTHENTIC CORPUS & ZERO-WILDCARD VERIFICATION (M1.5.1 CORRECTION)
+  // ==========================================================================
+  describe("Section F: Authentic Corpus & Production Dialogue Contract", () => {
+    it("Authentic corpus adapter -> strictly loads exactly 22 authentic Zipang Ch. 54 pages", () => {
+      const pages = getZipangCorpusPages();
+      expect(pages.length).toBe(EXPECTED_ZIPANG_54_PAGE_COUNT);
+      expect(pages.length).toBe(22);
+
+      // Verify authentic naming and ordering
+      for (let i = 0; i < 22; i++) {
+        expect(pages[i].id).toBe(`zipang__54__page_${i}`);
+        expect(pages[i].pageIndex).toBe(i);
+        expect(pages[i].jpegBytesLength).toBeGreaterThan(1000); // authentic image bytes
+        expect(pages[i].base64Data).toBeDefined();
+      }
+    });
+
+    it("Authentic corpus adapter -> never silently substitutes fallback fixtures", () => {
+      const origLocalAppData = process.env.LOCALAPPDATA;
+      try {
+        // Simulate missing environment path
+        delete process.env.LOCALAPPDATA;
+        expect(() => getZipangCorpusPages()).toThrow(/AUTHENTIC CORPUS FAILURE/i);
+      } finally {
+        process.env.LOCALAPPDATA = origLocalAppData;
+      }
+    });
+
+    it("Zero wildcard pages -> all 22 Zipang Ch. 54 pages have authentic non-negative expectedCount", () => {
+      for (let i = 0; i < 22; i++) {
+        const pageId = `zipang__54__page_${i}`;
+        const count = ZIPANG_54_PAGE_DIALOGUE_REGIONS[pageId];
+        expect(count).toBeDefined();
+        expect(count).toBeGreaterThanOrEqual(0);
+        // Never wildcard -1
+        expect(count).not.toBe(-1);
+      }
+      // Cover page has exactly 0 dialogue
+      expect(ZIPANG_54_PAGE_DIALOGUE_REGIONS["zipang__54__page_0"]).toBe(0);
+      // Dialogue pages have positive dialogue counts
+      expect(ZIPANG_54_PAGE_DIALOGUE_REGIONS["zipang__54__page_1"]).toBeGreaterThan(0);
     });
   });
 });
