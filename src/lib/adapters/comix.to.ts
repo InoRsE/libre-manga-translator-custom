@@ -22,8 +22,10 @@ export default {
     regex: "^$",
     source: "path",
   },
-  containerSelector: ".reader-container, #reader, .reader, #chapter-images",
-  imageSelector: ".reader-container img, .chapter-images img, #reader img, .reader img, #chapter-images img",
+  containerSelector: ".reader-container, #reader, .reader, #chapter-images, [data-reader], .comic-container, .comic-pages, main",
+  imageSelector: ".reader-container img, .chapter-images img, #reader img, .reader img, #chapter-images img, [data-reader] img, .comic-container img, .comic-pages img, main img",
+  pageCountSelector: "[class*='page-total'], [class*='total-pages'], [data-total-pages], select[name='page'], .pagination, [class*='pages-count'], select.page-select, [class*='counter']",
+  expectedCountRegex: "(?:\\/|of)\\s*(\\d+)",
   pillPosition: "top-left",
   toolbarPosition: "top-left",
 } satisfies SiteRule;

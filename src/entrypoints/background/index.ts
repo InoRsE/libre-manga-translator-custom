@@ -413,6 +413,25 @@ export default defineBackground(() => {
       return true;
     }
 
+    // Automatic CBZ Chapter Archive Download (M1.4 ACTION C)
+    if (msg.type === "DOWNLOAD_CHAPTER_CBZ") {
+      const { dataUrl, filename } = msg.data ?? {};
+      const task = async () => {
+        const downloadsApi = (browser as any).downloads;
+        if (downloadsApi?.download) {
+          const downloadId = await downloadsApi.download({
+            url: dataUrl,
+            filename: filename || "manga_chapter.cbz",
+            saveAs: false, // Zero confirmation prompts
+          });
+          return { success: true, downloadId };
+        }
+        return { success: false, error: "Downloads API not supported" };
+      };
+      keepAliveWhile(task().then(respond).catch(respondErr));
+      return true;
+    }
+
     // Service worker keep-alive heartbeat while background chapter preparation runs
     if (msg.type === "CHAPTER_PREP_HEARTBEAT") {
       respond({ alive: true, timestamp: Date.now() });

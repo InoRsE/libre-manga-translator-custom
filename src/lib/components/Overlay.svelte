@@ -381,6 +381,11 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
     }
     mode = "results";
     Registry.markDone(originalSrc);
+    Registry.setRenderedResult(originalSrc, {
+      renderedUrl: translatedUrl,
+      translations: $state.snapshot(translations),
+      sourceTexts: $state.snapshot(sourceTexts),
+    });
   }
 
   async function handleConfirm() {
@@ -701,6 +706,11 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
       sourceTexts = initialCache.sourceTexts ?? [];
       cleanedUrl = initialCache.cleanedSrc ?? "";
       Registry.markDone(originalSrc);
+      Registry.setRenderedResult(originalSrc, {
+        renderedUrl: translatedUrl,
+        translations: initialCache.translations ?? [],
+        sourceTexts: initialCache.sourceTexts ?? [],
+      });
     } else {
       const [skipRefining, autoTranslate, currentMode] = await Promise.all([
         storage.getItem<boolean>("sync:skip-bbox-refining"),
@@ -721,6 +731,11 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
           mode = "results";
           translatedUrl = rawImageUrl ?? "";
           Registry.markDone(originalSrc);
+          Registry.setRenderedResult(originalSrc, {
+            renderedUrl: translatedUrl,
+            translations: [],
+            sourceTexts: [],
+          });
         }
       } else {
         mode = "refining";

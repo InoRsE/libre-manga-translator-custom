@@ -325,5 +325,15 @@ export async function sendRequestToGemini(
     throw new Error("Gemini API returned empty response parts");
   }
 
-  return parseLlmJson(resultText);
+  const parsed = parseLlmJson(resultText);
+  if (result.usageMetadata && typeof parsed === "object" && parsed !== null) {
+    parsed.usageMetadata = {
+      promptTokenCount: result.usageMetadata.promptTokenCount,
+      candidatesTokenCount: result.usageMetadata.candidatesTokenCount,
+      thoughtsTokenCount: result.usageMetadata.thoughtsTokenCount,
+      totalTokenCount: result.usageMetadata.totalTokenCount,
+    };
+  }
+
+  return parsed;
 }

@@ -7,6 +7,13 @@
  * previous throw-on-mismatch behaviour.
  */
 
+export interface GeminiUsageMetadata {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  thoughtsTokenCount?: number;
+  totalTokenCount?: number;
+}
+
 export interface ValidatedTranslation {
   translations: Translations;
   sourceTexts?: string[];
@@ -14,6 +21,7 @@ export interface ValidatedTranslation {
     summary: string;
     dictionary: string;
   };
+  usageMetadata?: GeminiUsageMetadata;
 }
 
 export interface ValidateOptions {
@@ -130,7 +138,17 @@ export function validateTranslationResult(
     };
   }
 
-  return { translations, sourceTexts, context };
+  const usageMetadata: GeminiUsageMetadata | undefined =
+    obj.usageMetadata && typeof obj.usageMetadata === "object"
+      ? {
+          promptTokenCount: obj.usageMetadata.promptTokenCount,
+          candidatesTokenCount: obj.usageMetadata.candidatesTokenCount,
+          thoughtsTokenCount: obj.usageMetadata.thoughtsTokenCount,
+          totalTokenCount: obj.usageMetadata.totalTokenCount,
+        }
+      : undefined;
+
+  return { translations, sourceTexts, context, ...(usageMetadata ? { usageMetadata } : {}) };
 }
 
 export interface ExpectedBatchPage {
@@ -141,7 +159,7 @@ export interface ExpectedBatchPage {
 export interface ValidatedBatchPageResult {
   pageId: string;
   translations: string[];
-  sourceTexts: string[];
+  sourceTexts?: string[];
 }
 
 export interface ValidatedBatchResult {
@@ -150,6 +168,7 @@ export interface ValidatedBatchResult {
     summary: string;
     dictionary: string;
   };
+  usageMetadata?: GeminiUsageMetadata;
 }
 
 /**
@@ -237,7 +256,7 @@ export function validateBatchTranslationResult(
       translations.push(item);
     }
 
-    let sourceTexts: string[] = [];
+    let sourceTexts: string[] | undefined = undefined;
     if (pageData.sourceTexts !== undefined) {
       if (!Array.isArray(pageData.sourceTexts)) {
         throw new Error(
@@ -258,27 +277,27 @@ export function validateBatchTranslationResult(
         }
         return item;
       });
-    } else {
-      sourceTexts = new Array(expected.expectedCount).fill("");
     }
 
     // TRUTHFUL COMPLETENESS CHECK:
     // If a box has recognizable source dialogue but an empty translation,
     // dialogue was dropped! Reject the page rather than caching incomplete results.
-    for (let idx = 0; idx < expected.expectedCount; idx++) {
-      const srcDialogue = sourceTexts[idx]?.trim() ?? "";
-      const translatedDialogue = translations[idx]?.trim() ?? "";
-      if (srcDialogue.length > 0 && translatedDialogue.length === 0) {
-        throw new Error(
-          `Batch translation incomplete on page '${expected.pageId}': box ${idx + 1} has source dialogue ("${srcDialogue.substring(0, 30)}") but translation is empty`,
-        );
+    if (sourceTexts && Array.isArray(sourceTexts)) {
+      for (let idx = 0; idx < expected.expectedCount; idx++) {
+        const srcDialogue = sourceTexts[idx]?.trim() ?? "";
+        const translatedDialogue = translations[idx]?.trim() ?? "";
+        if (srcDialogue.length > 0 && translatedDialogue.length === 0) {
+          throw new Error(
+            `Batch translation incomplete on page '${expected.pageId}': box ${idx + 1} has source dialogue ("${srcDialogue.substring(0, 30)}") but translation is empty`,
+          );
+        }
       }
     }
 
     validatedPages.push({
       pageId: expected.pageId,
       translations,
-      sourceTexts,
+      ...(sourceTexts !== undefined ? { sourceTexts } : {}),
     });
   }
 
@@ -290,5 +309,15 @@ export function validateBatchTranslationResult(
     };
   }
 
-  return { pages: validatedPages, context };
+  const usageMetadata: GeminiUsageMetadata | undefined =
+    obj.usageMetadata && typeof obj.usageMetadata === "object"
+      ? {
+          promptTokenCount: obj.usageMetadata.promptTokenCount,
+          candidatesTokenCount: obj.usageMetadata.candidatesTokenCount,
+          thoughtsTokenCount: obj.usageMetadata.thoughtsTokenCount,
+          totalTokenCount: obj.usageMetadata.totalTokenCount,
+        }
+      : undefined;
+
+  return { pages: validatedPages, context, ...(usageMetadata ? { usageMetadata } : {}) };
 }

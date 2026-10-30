@@ -173,35 +173,39 @@ export class VisionBatchCoordinator {
 
       reqA.resolve({
         translations: resA.translations,
-        sourceTexts: resA.sourceTexts ?? new Array(reqA.bboxes.length).fill(""),
+        sourceTexts: resA.sourceTexts,
         context: resp.context,
         gateSkip: new Array(reqA.bboxes.length).fill(null),
         gate: { mode: "off", checked: 0, skipped: 0, unavailable: false },
         timing: { translate: batchDuration },
         geminiWorkflow: "vision-batch",
         fallback: false,
+        usageMetadata: resp.usageMetadata,
         batchInfo: {
           batchSize: 2,
           isBatch: true,
           batchDurationMs: Math.round(batchDuration),
           companionSrc: reqB.originalSrc,
+          usageMetadata: resp.usageMetadata,
         },
       });
 
       reqB.resolve({
         translations: resB.translations,
-        sourceTexts: resB.sourceTexts ?? new Array(reqB.bboxes.length).fill(""),
+        sourceTexts: resB.sourceTexts,
         context: resp.context,
         gateSkip: new Array(reqB.bboxes.length).fill(null),
         gate: { mode: "off", checked: 0, skipped: 0, unavailable: false },
         timing: { translate: batchDuration },
         geminiWorkflow: "vision-batch",
         fallback: false,
+        usageMetadata: resp.usageMetadata,
         batchInfo: {
           batchSize: 2,
           isBatch: true,
           batchDurationMs: Math.round(batchDuration),
           companionSrc: reqA.originalSrc,
+          usageMetadata: resp.usageMetadata,
         },
       });
     } catch (err: any) {

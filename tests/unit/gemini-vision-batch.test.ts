@@ -209,6 +209,27 @@ describe("Gemini Vision 2-Image Batching (M1.3.1)", () => {
       expect(validated.pages[0].translations).toEqual([]);
       expect(validated.pages[1].translations).toEqual(["สวัสดี"]);
     });
+
+    it("Issue #5: eliminates manufacture of empty sourceTexts when absent", () => {
+      const rawWithoutSourceTexts = {
+        pages: [
+          { pageId: "page-1", translations: ["สวัสดี 1", "สวัสดี 2"] },
+          { pageId: "page-2", translations: ["สวัสดี 3"] },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1200,
+          candidatesTokenCount: 150,
+          totalTokenCount: 1350,
+        },
+      };
+      const validated = validateBatchTranslationResult(rawWithoutSourceTexts, [
+        { pageId: "page-1", expectedCount: 2 },
+        { pageId: "page-2", expectedCount: 1 },
+      ]);
+      expect(validated.pages[0].sourceTexts).toBeUndefined();
+      expect(validated.pages[1].sourceTexts).toBeUndefined();
+      expect(validated.usageMetadata?.totalTokenCount).toBe(1350);
+    });
   });
 
   describe("VisionBatchCoordinator — Queue Lifecycle & Pair Dispatch", () => {

@@ -29,6 +29,10 @@ export interface SiteRule {
   containerSelector?: string;
   /** CSS selector targeting chapter page <img> elements */
   imageSelector?: string;
+  /** CSS selector targeting total page count indicator or page select dropdown */
+  pageCountSelector?: string;
+  /** Optional regex to parse expected page count from pageCountSelector element text */
+  expectedCountRegex?: string;
   /** Where to anchor the floating translate pill on each image */
   pillPosition?: PillPosition;
   /** Where to initially position the floating toolbar overlay */
