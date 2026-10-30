@@ -277,6 +277,12 @@ export function validateBatchTranslationResult(
         }
         return item;
       });
+    } else if (expected.expectedCount > 0) {
+      // M1.4.1 REPAIR E: A multi-image Vision Batch with dialogue boxes must not accept a
+      // response with an entirely omitted 'sourceTexts' field as fully verified.
+      throw new Error(
+        `Batch translation for page '${expected.pageId}' missing required 'sourceTexts' transcription array for ${expected.expectedCount} dialogue boxes`,
+      );
     }
 
     // TRUTHFUL COMPLETENESS CHECK:

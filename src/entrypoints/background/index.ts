@@ -413,20 +413,88 @@ export default defineBackground(() => {
       return true;
     }
 
-    // Automatic CBZ Chapter Archive Download (M1.4 ACTION C)
+    // Automatic CBZ Chapter Archive Download (M1.4.1 REPAIR D)
     if (msg.type === "DOWNLOAD_CHAPTER_CBZ") {
       const { dataUrl, filename } = msg.data ?? {};
       const task = async () => {
-        const downloadsApi = (browser as any).downloads;
-        if (downloadsApi?.download) {
-          const downloadId = await downloadsApi.download({
-            url: dataUrl,
-            filename: filename || "manga_chapter.cbz",
-            saveAs: false, // Zero confirmation prompts
-          });
-          return { success: true, downloadId };
+        if (!dataUrl || typeof dataUrl !== "string") {
+          return {
+            success: false,
+            downloadState: "download_failed",
+            error: "Invalid or empty archive payload",
+          };
         }
-        return { success: false, error: "Downloads API not supported" };
+
+        const downloadsApi = (browser as any).downloads;
+        if (!downloadsApi?.download) {
+          return {
+            success: false,
+            downloadState: "download_failed",
+            error: "Downloads API not supported",
+          };
+        }
+
+        const downloadId = await downloadsApi.download({
+          url: dataUrl,
+          filename: filename || "manga_chapter.cbz",
+          saveAs: false, // Zero confirmation prompts
+        });
+
+        // Observe actual browser download completion or interruption
+        if (downloadsApi.onChanged?.addListener) {
+          return new Promise((resolve) => {
+            const timeoutTimer = setTimeout(() => {
+              if (downloadsApi.onChanged?.removeListener) {
+                downloadsApi.onChanged.removeListener(listener);
+              }
+              resolve({
+                success: false,
+                downloadState: "download_failed",
+                downloadId,
+                error: "Browser download timed out after 120s",
+              });
+            }, 120000);
+
+            const listener = (delta: any) => {
+              if (delta.id === downloadId) {
+                if (delta.state?.current === "complete") {
+                  clearTimeout(timeoutTimer);
+                  if (downloadsApi.onChanged?.removeListener) {
+                    downloadsApi.onChanged.removeListener(listener);
+                  }
+                  resolve({
+                    success: true,
+                    downloadState: "download_completed",
+                    downloadId,
+                  });
+                } else if (
+                  delta.state?.current === "interrupted" ||
+                  delta.error?.current
+                ) {
+                  clearTimeout(timeoutTimer);
+                  if (downloadsApi.onChanged?.removeListener) {
+                    downloadsApi.onChanged.removeListener(listener);
+                  }
+                  resolve({
+                    success: false,
+                    downloadState: "download_failed",
+                    downloadId,
+                    error: delta.error?.current || "Download interrupted",
+                  });
+                }
+              }
+            };
+
+            downloadsApi.onChanged.addListener(listener);
+          });
+        }
+
+        // Fallback for testing environments where onChanged is not simulated
+        return {
+          success: true,
+          downloadState: "download_started",
+          downloadId,
+        };
       };
       keepAliveWhile(task().then(respond).catch(respondErr));
       return true;

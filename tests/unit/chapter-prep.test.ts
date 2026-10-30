@@ -195,14 +195,21 @@ describe("ChapterPreparationManager — State Machine & Truthful Accounting", ()
     expect(startProg.discovered).toBe(2);
     expect(enqueued.length).toBe(2);
 
+    const DUMMY_PNG =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==";
+
     // Simulate page 1 finishing
+    Registry.setRenderedResult(img1.src, { renderedUrl: DUMMY_PNG });
     Registry.markDone(img1.src);
+    await new Promise((r) => setTimeout(r, 20));
     let current = manager.getProgress();
     expect(current.status).toBe("preparing");
     expect(current.completed).toBe(1);
 
     // Simulate page 2 finishing
+    Registry.setRenderedResult(img2.src, { renderedUrl: DUMMY_PNG });
     Registry.markDone(img2.src);
+    await new Promise((r) => setTimeout(r, 20));
     current = manager.getProgress();
     expect(current.status).toBe("ready");
     expect(current.completed).toBe(2);
@@ -232,10 +239,15 @@ describe("ChapterPreparationManager — State Machine & Truthful Accounting", ()
     const manager = new ChapterPreparationManager(mockOrchestrator);
     await manager.start({ notify: false });
 
+    const DUMMY_PNG =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==";
+
     // Page 1 succeeds
+    Registry.setRenderedResult(img1.src, { renderedUrl: DUMMY_PNG });
     Registry.markDone(img1.src);
     // Page 2 fails (emits idle status)
     Registry.markIdle(img2.src);
+    await new Promise((r) => setTimeout(r, 20));
 
     const current = manager.getProgress();
     expect(current.status).toBe("partial");

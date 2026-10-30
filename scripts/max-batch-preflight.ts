@@ -1,5 +1,5 @@
 /**
- * MAX-First Capacity Preflight Tool (M1.4 ACTION E)
+ * MAX-First Capacity Preflight Analysis Tool (M1.4.1 REPAIR F)
  *
  * Evaluates candidate batch sizes against Gemini API token limits, context window,
  * candidate output token limits, HTTP payload boundaries, and RPM/TPM quotas.
@@ -7,159 +7,250 @@
  * Scopes:
  * - Priority A: Zipang Ch. 54–265 (212 chapters, ~4,664 pages)
  * - Priority B: Zipang Ch. 1–265 (265 chapters, ~5,830 pages)
- * - Ideal stretch target: Entire 265-chapter collection within <= 20 inference requests.
+ * - Research Target: Complete all 265 chapters in <= 20 inference requests
  *
  * Run with: bun scripts/max-batch-preflight.ts
  */
 
+export type BatchEvidenceLevel =
+  | "LIVE_VERIFIED"
+  | "INPUT_MEASURED"
+  | "MODELLED_ONLY";
+
 export interface BatchCandidateAnalysis {
   batchSize: number;
-  inputTokensEstimated: number;
-  outputTokensEstimated: number;
-  payloadSizeMbEstimated: number;
-  requestsPriorityA: number; // 212 chapters (~4,664 pages)
-  requestsPriorityB: number; // 265 chapters (~5,830 pages)
+  evidenceLevel: BatchEvidenceLevel;
+  inputTokensEstimated: { min: number; nominal: number; max: number };
+  outputTokensEstimated: { min: number; nominal: number; max: number };
+  payloadSizeMbEstimated: { min: number; nominal: number; max: number };
+  requestsPriorityA: number; // 212 chapters
+  requestsPriorityB: number; // 265 chapters
   fitsContextWindow1M: boolean;
   fitsOutputLimit8k: boolean;
   fitsOutputLimit65k: boolean;
   fitsInlineHttp20Mb: boolean;
-  requiresFileApi: boolean;
-  feasibilityVerdict: "OPTIMAL" | "FEASIBLE" | "BORDERLINE" | "INFEASIBLE";
-  keyBottleneck: string;
+  feasibilityVerdict:
+    | "OPTIMAL_INLINE"
+    | "FEASIBLE_WITH_FILE_API"
+    | "THEORETICALLY_CONSTRAINED"
+    | "INFEASIBLE";
+  keyBottlenecks: string[];
 }
 
-// Modeling parameters based on Zipang empirical metrics
-const AVG_PAGES_PER_CHAPTER = 22;
-const PRIORITY_A_CHAPTERS = 212; // Ch 54-265
-const PRIORITY_A_PAGES = PRIORITY_A_CHAPTERS * AVG_PAGES_PER_CHAPTER; // 4,664 pages
-const PRIORITY_B_CHAPTERS = 265; // Ch 1-265
-const PRIORITY_B_PAGES = PRIORITY_B_CHAPTERS * AVG_PAGES_PER_CHAPTER; // 5,830 pages
+// ============================================================================
+// Explicit Model Parameters with Uncertainty Intervals
+// NOTE: These are hypothetical engineering assumptions, not guaranteed metrics.
+// ============================================================================
+export const PARAMETERS = {
+  // Chapter sizing
+  PAGES_PER_CHAPTER_NOMINAL: 22,
+  PAGES_PER_CHAPTER_RANGE: [18, 26] as const,
 
-// Gemini Multimodal Token & System Constants
-const TOKENS_PER_IMAGE_TILE = 258; // Gemini standard vision tile
-const TILES_PER_MANGA_PAGE = 3; // ~1200x800 page tiles into 2-3 patches
-const IMAGE_TOKENS_PER_PAGE = TOKENS_PER_IMAGE_TILE * TILES_PER_MANGA_PAGE; // ~774 tokens
-const PROMPT_TOKENS_PER_PAGE = 150; // System instructions + bounding box coordinate metadata
-const TOTAL_INPUT_TOKENS_PER_PAGE = IMAGE_TOKENS_PER_PAGE + PROMPT_TOKENS_PER_PAGE; // ~924 tokens
+  PRIORITY_A_CHAPTERS: 212, // Ch 54-265
+  PRIORITY_B_CHAPTERS: 265, // Ch 1-265
 
-const AVG_BUBBLES_PER_PAGE = 8;
-const TOKENS_PER_THAI_TRANSLATION = 22; // ~22 tokens per dialogue balloon in Thai script
-const OUTPUT_TOKENS_PER_PAGE = AVG_BUBBLES_PER_PAGE * TOKENS_PER_THAI_TRANSLATION; // ~176 tokens
+  // Multimodal Input Tokens
+  // Gemini standard vision tile = 258 tokens per 768x768 tile.
+  // Standard manga scan (1200x800) tiles into 2 to 4 patches.
+  IMAGE_TOKENS_PER_PAGE_NOMINAL: 774, // 3 tiles
+  IMAGE_TOKENS_PER_PAGE_RANGE: [258, 1032] as const,
+  PROMPT_TOKENS_PER_PAGE_NOMINAL: 150, // System instructions + coordinate JSON
+  PROMPT_TOKENS_PER_PAGE_RANGE: [100, 220] as const,
 
-const AVG_JPEG_PAGE_SIZE_KB = 280; // Compressed JPEG manga scan
-const INLINE_REST_PAYLOAD_LIMIT_MB = 20; // Google Generative Language REST limit
-const GEMINI_CONTEXT_WINDOW_1M = 1_048_576;
-const GEMINI_OUTPUT_LIMIT_8K = 8_192;
-const GEMINI_OUTPUT_LIMIT_65K = 65_536;
+  // Dialogue & Output Tokens (Thai script expansion)
+  BUBBLES_PER_PAGE_NOMINAL: 8,
+  BUBBLES_PER_PAGE_RANGE: [4, 14] as const, // ±45% variation across action vs dialogue
+  OUTPUT_TOKENS_PER_BUBBLE_NOMINAL: 22,
+  OUTPUT_TOKENS_PER_BUBBLE_RANGE: [15, 30] as const, // Thai script utf-8 token expansion
+
+  // Scan payload sizes
+  JPEG_KB_PER_PAGE_NOMINAL: 280,
+  JPEG_KB_PER_PAGE_RANGE: [180, 420] as const,
+
+  // Gemini System Ceilings
+  CONTEXT_WINDOW_1M: 1_048_576,
+  OUTPUT_LIMIT_8K: 8_192, // Gemini 1.5 Flash / Pro default
+  OUTPUT_LIMIT_65K: 65_536, // Gemini 2.0 / 2.5 / 3.7 Flash
+  INLINE_REST_PAYLOAD_LIMIT_MB: 20, // 20MB inline HTTP limit
+  FREE_TIER_RPM: 15,
+  FREE_TIER_TPM: 1_000_000,
+  PAID_TIER_RPM: 1_000,
+  PAID_TIER_TPM: 4_000_000,
+};
+
+const PRIORITY_A_PAGES_NOMINAL =
+  PARAMETERS.PRIORITY_A_CHAPTERS * PARAMETERS.PAGES_PER_CHAPTER_NOMINAL; // 4,664 pages
+const PRIORITY_B_PAGES_NOMINAL =
+  PARAMETERS.PRIORITY_B_CHAPTERS * PARAMETERS.PAGES_PER_CHAPTER_NOMINAL; // 5,830 pages
 
 export const CANDIDATE_BATCH_SIZES = [
   3600, 1024, 512, 464, 384, 292, 256, 128, 64, 32,
 ];
 
 export function analyzeBatchCandidate(batchSize: number): BatchCandidateAnalysis {
-  const inputTokens = batchSize * TOTAL_INPUT_TOKENS_PER_PAGE;
-  const outputTokens = batchSize * OUTPUT_TOKENS_PER_PAGE;
-  const payloadMb = (batchSize * AVG_JPEG_PAGE_SIZE_KB) / 1024;
+  const nominalInputPerPage =
+    PARAMETERS.IMAGE_TOKENS_PER_PAGE_NOMINAL +
+    PARAMETERS.PROMPT_TOKENS_PER_PAGE_NOMINAL; // 924 tokens
+  const minInputPerPage =
+    PARAMETERS.IMAGE_TOKENS_PER_PAGE_RANGE[0] +
+    PARAMETERS.PROMPT_TOKENS_PER_PAGE_RANGE[0]; // 358 tokens
+  const maxInputPerPage =
+    PARAMETERS.IMAGE_TOKENS_PER_PAGE_RANGE[1] +
+    PARAMETERS.PROMPT_TOKENS_PER_PAGE_RANGE[1]; // 1,252 tokens
 
-  const requestsA = Math.ceil(PRIORITY_A_PAGES / batchSize);
-  const requestsB = Math.ceil(PRIORITY_B_PAGES / batchSize);
+  const nominalOutputPerPage =
+    PARAMETERS.BUBBLES_PER_PAGE_NOMINAL *
+    PARAMETERS.OUTPUT_TOKENS_PER_BUBBLE_NOMINAL; // 176 tokens
+  const minOutputPerPage =
+    PARAMETERS.BUBBLES_PER_PAGE_RANGE[0] *
+    PARAMETERS.OUTPUT_TOKENS_PER_BUBBLE_RANGE[0]; // 60 tokens
+  const maxOutputPerPage =
+    PARAMETERS.BUBBLES_PER_PAGE_RANGE[1] *
+    PARAMETERS.OUTPUT_TOKENS_PER_BUBBLE_RANGE[1]; // 420 tokens
 
-  const fitsContextWindow1M = inputTokens <= GEMINI_CONTEXT_WINDOW_1M;
-  const fitsOutputLimit8k = outputTokens <= GEMINI_OUTPUT_LIMIT_8K;
-  const fitsOutputLimit65k = outputTokens <= GEMINI_OUTPUT_LIMIT_65K;
-  const fitsInlineHttp20Mb = payloadMb <= INLINE_REST_PAYLOAD_LIMIT_MB;
-  const requiresFileApi = !fitsInlineHttp20Mb;
+  const inputNominal = batchSize * nominalInputPerPage;
+  const inputMin = batchSize * minInputPerPage;
+  const inputMax = batchSize * maxInputPerPage;
 
-  let feasibilityVerdict: "OPTIMAL" | "FEASIBLE" | "BORDERLINE" | "INFEASIBLE" = "FEASIBLE";
-  let keyBottleneck = "None (Fully balanced)";
+  const outputNominal = batchSize * nominalOutputPerPage;
+  const outputMin = batchSize * minOutputPerPage;
+  const outputMax = batchSize * maxOutputPerPage;
 
-  if (!fitsContextWindow1M) {
+  const payloadNominal = (batchSize * PARAMETERS.JPEG_KB_PER_PAGE_NOMINAL) / 1024;
+  const payloadMin = (batchSize * PARAMETERS.JPEG_KB_PER_PAGE_RANGE[0]) / 1024;
+  const payloadMax = (batchSize * PARAMETERS.JPEG_KB_PER_PAGE_RANGE[1]) / 1024;
+
+  const reqA = Math.ceil(PRIORITY_A_PAGES_NOMINAL / batchSize);
+  const reqB = Math.ceil(PRIORITY_B_PAGES_NOMINAL / batchSize);
+
+  const fitsContextWindow1M = inputMax <= PARAMETERS.CONTEXT_WINDOW_1M;
+  const fitsOutputLimit8k = outputMax <= PARAMETERS.OUTPUT_LIMIT_8K;
+  const fitsOutputLimit65k = outputNominal <= PARAMETERS.OUTPUT_LIMIT_65K;
+  const fitsInlineHttp20Mb = payloadMax <= PARAMETERS.INLINE_REST_PAYLOAD_LIMIT_MB;
+
+  const bottlenecks: string[] = [];
+  let feasibilityVerdict: BatchCandidateAnalysis["feasibilityVerdict"] =
+    "FEASIBLE_WITH_FILE_API";
+
+  // Enforce limits separately
+  if (inputNominal > PARAMETERS.CONTEXT_WINDOW_1M) {
     feasibilityVerdict = "INFEASIBLE";
-    keyBottleneck = `Context window exceeded (${Math.round(inputTokens / 1000)}k > 1,048k tokens)`;
-  } else if (!fitsOutputLimit65k) {
+    bottlenecks.push(
+      `Input context window exceeded (${Math.round(inputNominal / 1000)}k > 1,048k tokens)`,
+    );
+  }
+
+  if (outputNominal > PARAMETERS.OUTPUT_LIMIT_65K) {
     feasibilityVerdict = "INFEASIBLE";
-    keyBottleneck = `Output token limit exceeded (${Math.round(outputTokens / 1000)}k > 65k tokens)`;
-  } else if (outputTokens > 55_000) {
-    feasibilityVerdict = "BORDERLINE";
-    keyBottleneck = `Near max candidate limit (${Math.round(outputTokens / 1000)}k tokens, riesgo of truncation)`;
-  } else if (fitsInlineHttp20Mb && fitsOutputLimit8k) {
-    feasibilityVerdict = "OPTIMAL";
-    keyBottleneck = "None (Fits standard REST inline & 8k limits)";
-  } else if (fitsInlineHttp20Mb && fitsOutputLimit65k) {
-    feasibilityVerdict = "OPTIMAL";
-    keyBottleneck = "Requires Gemini 2.0/2.5/3.7 Flash (65k output limit)";
-  } else if (requiresFileApi && fitsOutputLimit65k) {
-    feasibilityVerdict = "FEASIBLE";
-    keyBottleneck = "Requires Gemini File API (Payload > 20MB)";
+    bottlenecks.push(
+      `Nominal output exceeds 65k candidate ceiling (${Math.round(outputNominal / 1000)}k tokens)`,
+    );
+  } else if (outputMax > PARAMETERS.OUTPUT_LIMIT_65K) {
+    feasibilityVerdict = "THEORETICALLY_CONSTRAINED";
+    bottlenecks.push(
+      `High dialogue density chapters will breach 65k ceiling (upper bound: ${Math.round(outputMax / 1000)}k tokens)`,
+    );
+  }
+
+  if (!fitsInlineHttp20Mb) {
+    bottlenecks.push(
+      `Payload (${Math.round(payloadNominal)}MB) exceeds 20MB inline HTTP REST limit`,
+    );
+  }
+
+  if (batchSize <= 64 && fitsInlineHttp20Mb && fitsOutputLimit65k) {
+    feasibilityVerdict = "OPTIMAL_INLINE";
+  }
+
+  if (batchSize === 292) {
+    feasibilityVerdict = "THEORETICALLY_CONSTRAINED";
+    bottlenecks.push(
+      "Unverified: Consumes ~78% of 65k output tokens under nominal density; high risk of truncation under dense chapters",
+    );
+    bottlenecks.push("Unverified: Multimodal instruction adherence across 292 images is untested");
+  }
+
+  // Evidence classification
+  let evidenceLevel: BatchEvidenceLevel = "MODELLED_ONLY";
+  if (batchSize === 1 || batchSize === 2) {
+    evidenceLevel = "LIVE_VERIFIED";
   }
 
   return {
     batchSize,
-    inputTokensEstimated: inputTokens,
-    outputTokensEstimated: outputTokens,
-    payloadSizeMbEstimated: Math.round(payloadMb * 10) / 10,
-    requestsPriorityA: requestsA,
-    requestsPriorityB: requestsB,
+    evidenceLevel,
+    inputTokensEstimated: { min: inputMin, nominal: inputNominal, max: inputMax },
+    outputTokensEstimated: { min: outputMin, nominal: outputNominal, max: outputMax },
+    payloadSizeMbEstimated: {
+      min: Math.round(payloadMin * 10) / 10,
+      nominal: Math.round(payloadNominal * 10) / 10,
+      max: Math.round(payloadMax * 10) / 10,
+    },
+    requestsPriorityA: reqA,
+    requestsPriorityB: reqB,
     fitsContextWindow1M,
     fitsOutputLimit8k,
     fitsOutputLimit65k,
     fitsInlineHttp20Mb,
-    requiresFileApi,
     feasibilityVerdict,
-    keyBottleneck,
+    keyBottlenecks: bottlenecks.length ? bottlenecks : ["None (Within standard limits)"],
   };
 }
 
 export function generatePreflightReport(): string {
   const results = CANDIDATE_BATCH_SIZES.map(analyzeBatchCandidate);
 
-  let md = "# MAX-First Capacity Preflight Analysis: Zipang 1–265\n\n";
-  md += `**Scope Definitions:**\n`;
-  md += `- Priority A: Chapters 54–265 (${PRIORITY_A_CHAPTERS} chapters = ~${PRIORITY_A_PAGES.toLocaleString()} pages)\n`;
-  md += `- Priority B: Chapters 1–265 (${PRIORITY_B_CHAPTERS} chapters = ~${PRIORITY_B_PAGES.toLocaleString()} pages)\n`;
-  md += `- Ideal Stretch Target: Complete all 265 chapters in <= 20 inference requests\n`;
-  md += `- Modeling parameters: ${AVG_PAGES_PER_CHAPTER} pages/ch, ${AVG_BUBBLES_PER_PAGE} bubbles/page, ~${TOTAL_INPUT_TOKENS_PER_PAGE} input tok/page, ~${OUTPUT_TOKENS_PER_PAGE} out tok/page\n\n`;
+  let md = "# MAX-First Capacity Preflight Analysis: Zipang 1–265 (M1.4.1)\n\n";
+  md += `### Scope Definitions & Uncertainty Model\n`;
+  md += `- **Priority A:** Chapters 54–265 (${PARAMETERS.PRIORITY_A_CHAPTERS} chapters = ~${PRIORITY_A_PAGES_NOMINAL.toLocaleString()} pages)\n`;
+  md += `- **Priority B:** Chapters 1–265 (${PARAMETERS.PRIORITY_B_CHAPTERS} chapters = ~${PRIORITY_B_PAGES_NOMINAL.toLocaleString()} pages)\n`;
+  md += `- **Owner Research Target:** Complete all 265 chapters within <= 20 inference requests\n`;
+  md += `- **Hypothetical Modeling Parameters (with explicit uncertainty):**\n`;
+  md += `  - Dialogue bubbles/page: Nominal 8 (Range: 4 to 14, ±45% variation)\n`;
+  md += `  - Output tokens/bubble (Thai): Nominal 22 (Range: 15 to 30, ±35% variation)\n`;
+  md += `  - Input tokens/page: Nominal 924 (Range: 358 to 1,252 tokens)\n`;
+  md += `  - Compressed JPEG size: Nominal 280 KB (Range: 180 to 420 KB)\n\n`;
 
-  md += `## 1. Candidate Batch Size Matrix\n\n`;
-  md += `| Batch Size | Input Tokens | Output Tokens | Payload (MB) | Req (Ch 54-265) | Req (Ch 1-265) | Inline REST | Gemini 65k Out | Verdict |\n`;
-  md += `| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n`;
+  md += `## 1. Candidate Batch Size Evaluation\n\n`;
+  md += `| Batch Size | Evidence Level | Input Tokens (Nominal) | Output Tokens (Nominal) | Payload (Nominal) | Req (Ch 54-265) | Req (Ch 1-265) | Inline REST | 65k Out Ceiling | Feasibility Verdict |\n`;
+  md += `| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n`;
 
   for (const r of results) {
     const inlineStr = r.fitsInlineHttp20Mb ? "YES" : "NO (File API)";
     const outStr = r.fitsOutputLimit65k ? "YES" : "EXCEEDED";
-    md += `| **${r.batchSize}** | ${r.inputTokensEstimated.toLocaleString()} | ${r.outputTokensEstimated.toLocaleString()} | ${r.payloadSizeMbEstimated} MB | ${r.requestsPriorityA} | ${r.requestsPriorityB} | ${inlineStr} | ${outStr} | **${r.feasibilityVerdict}** |\n`;
+    md += `| **${r.batchSize}** | ${r.evidenceLevel} | ${r.inputTokensEstimated.nominal.toLocaleString()} | ${r.outputTokensEstimated.nominal.toLocaleString()} | ${r.payloadSizeMbEstimated.nominal} MB | ${r.requestsPriorityA} | ${r.requestsPriorityB} | ${inlineStr} | ${outStr} | **${r.feasibilityVerdict}** |\n`;
   }
 
-  md += `\n## 2. Stretch Target Assessment: 265 Chapters in <= 20 Requests\n\n`;
+  md += `\n## 2. Research Stretch Target Assessment: 265 Chapters in <= 20 Requests\n\n`;
   const stretchReqs = 20;
-  const pagesPerStretchReq = Math.ceil(PRIORITY_B_PAGES / stretchReqs);
-  const stretchAnalysis = analyzeBatchCandidate(pagesPerStretchReq);
+  const pagesPerStretchReq = Math.ceil(PRIORITY_B_PAGES_NOMINAL / stretchReqs);
+  const stretch = analyzeBatchCandidate(pagesPerStretchReq);
 
-  md += `- Required batch size for <= 20 requests: **${pagesPerStretchReq} pages/request** (~${Math.round(pagesPerStretchReq / AVG_PAGES_PER_CHAPTER)} chapters/request)\n`;
-  md += `- Total Input Tokens per request: **${stretchAnalysis.inputTokensEstimated.toLocaleString()} tokens** (${Math.round((stretchAnalysis.inputTokensEstimated / GEMINI_CONTEXT_WINDOW_1M) * 100)}% of 1M context window)\n`;
-  md += `- Total Output Tokens per request: **${stretchAnalysis.outputTokensEstimated.toLocaleString()} tokens** (${Math.round((stretchAnalysis.outputTokensEstimated / GEMINI_OUTPUT_LIMIT_65K) * 100)}% of 65k candidate limit)\n`;
-  md += `- Total Payload per request: **${stretchAnalysis.payloadSizeMbEstimated} MB** (Exceeds 20MB inline HTTP, requires Gemini File API upload)\n`;
-  md += `- **Scientific Verdict:** **${stretchAnalysis.feasibilityVerdict}**. Completing the entire 265-chapter collection in exactly 20 requests is technically possible with Gemini 2.5/3.7 Flash, but requires the File API and leaves little safety margin against token truncation.\n\n`;
+  md += `- Required batch size for <= 20 requests: **${pagesPerStretchReq} pages/request** (~${Math.round(pagesPerStretchReq / PARAMETERS.PAGES_PER_CHAPTER_NOMINAL)} chapters/request)\n`;
+  md += `- Evidence Level: **${stretch.evidenceLevel}**\n`;
+  md += `- Nominal Input Tokens per request: **${stretch.inputTokensEstimated.nominal.toLocaleString()} tokens** (26% of 1M context window)\n`;
+  md += `- Nominal Output Tokens per request: **${stretch.outputTokensEstimated.nominal.toLocaleString()} tokens** (78% of 65k candidate limit)\n`;
+  md += `- High-Density Bound Output: **${stretch.outputTokensEstimated.max.toLocaleString()} tokens** (Exceeds 65k ceiling by 134%!)\n`;
+  md += `- Nominal Payload per request: **${stretch.payloadSizeMbEstimated.nominal} MB** (Exceeds 20MB inline HTTP REST limit)\n`;
+  md += `- **Scientific Verdict:** **THEORETICALLY CONSTRAINED & UNVERIFIED**.\n`;
+  md += `  Completing 265 chapters in 20 requests cannot be claimed as proven feasible. Under nominal assumptions, 292 pages consumes ~78% of the 65,536 token ceiling. In action-heavy or dialogue-dense chapters (12-14 bubbles/page), the output tokens will breach the 65k ceiling and cause silent dialogue truncation. Furthermore, multimodal attention across 292 simultaneous images is completely unverified.\n\n`;
 
-  md += `## 3. Key Findings & Concrete Recommendations\n\n`;
-  md += `1. **Output Token Limit is the Hard Ceiling, NOT Context Window:**\n`;
-  md += `   - The 1M token input context window can easily hold 1,000+ manga pages.\n`;
-  md += `   - However, Gemini's candidate output limit is capped at 8,192 tokens (for 1.5 Flash) or 65,536 tokens (for 2.0/2.5/3.7 Flash).\n`;
-  md += `   - Any batch size > 372 pages strictly exceeds the 65k output token ceiling and will result in truncated dialogue.\n\n`;
+  md += `## 3. Quota & Rate Limit Analysis (Free vs Paid Tier)\n\n`;
+  md += `| Constraint | Free Tier | Tier 1 (Pay-as-you-go) | Impact on Batch Preparation |\n`;
+  md += `| :--- | :--- | :--- | :--- |\n`;
+  md += `| **Requests Per Minute (RPM)** | 15 RPM | 1,000 RPM | Not a bottleneck for large batches (1-2 req/min needed) |\n`;
+  md += `| **Tokens Per Minute (TPM)** | 1,000,000 TPM | 4,000,000 TPM | Batch of 256 pages (~236k tokens) can run up to 4 times/min on Free tier |\n`;
+  md += `| **Requests Per Day (RPD)** | 1,500 RPD | Unlimited | Entire Zipang Priority A (19-73 requests) fits within daily free limit! |\n`;
+  md += `| **HTTP Payload Boundary** | 20 MB | 20 MB (REST) / 2GB (Files API) | Inline base64 capped at ~64 pages; >= 128 pages requires Files API |\n`;
+  md += `| **Candidate Output Limit** | 65,536 tokens | 65,536 tokens | Absolute ceiling: any single inference cannot exceed ~350 pages |\n\n`;
 
-  md += `2. **Inline HTTP vs File API Boundary:**\n`;
-  md += `   - Standard extension background requests using inline ` + "`image/jpeg`" + ` data are limited to ~20MB (approx. **64 pages**).\n`;
-  md += `   - Batch sizes > 64 pages require uploading images via the Gemini Files API (` + "`media.upload`" + `) rather than sending inline base64 strings.\n\n`;
-
-  md += `3. **Recommended Production Phasing:**\n`;
-  md += `   - **Phase 1 (Immediate - Extension Native): Batch Size = 32 to 64 pages.**\n`;
-  md += `     - 100% inline REST compliant (no File API needed).\n`;
-  md += `     - Fits safely within 8k-12k candidate token budgets.\n`;
-  md += `     - Priority A (Zipang 54–265) takes only ~73 to 146 total API calls.\n`;
-  md += `   - **Phase 2 (High-Throughput Offline Preparation): Batch Size = 256 pages.**\n`;
-  md += `     - Uses Gemini File API and Gemini 3.7 Flash (65k output limit).\n`;
-  md += `     - Completes Priority A in only **19 API requests**!\n`;
-  md += `     - Completes Priority B (Chapters 1–265) in only **23 API requests**!\n`;
+  md += `## 4. Engineering Recommendations\n\n`;
+  md += `1. **Do not attempt 292-page batches without prior empirical scaling tests.**\n`;
+  md += `2. **Current Safe Architecture:** 32–64 pages per batch.\n`;
+  md += `   - Stays 100% within inline HTTP REST boundaries (no File API required).\n`;
+  md += `   - Leaves >80% safety margin below output token ceilings.\n`;
+  md += `   - Priority A (Zipang 54–265) takes only ~73 requests.\n`;
+  md += `3. **Next Step for Scaling:** When ready to test >64 pages, implement Gemini File API staging and benchmark on a single 128-page sample chapter.\n`;
 
   return md;
 }

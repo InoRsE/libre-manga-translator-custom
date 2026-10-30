@@ -210,25 +210,40 @@ describe("Gemini Vision 2-Image Batching (M1.3.1)", () => {
       expect(validated.pages[1].translations).toEqual(["สวัสดี"]);
     });
 
-    it("Issue #5: eliminates manufacture of empty sourceTexts when absent", () => {
+    it("Issue #5 / M1.4.1 REPAIR E: strictly throws if sourceTexts is omitted on dialogue pages", () => {
       const rawWithoutSourceTexts = {
         pages: [
           { pageId: "page-1", translations: ["สวัสดี 1", "สวัสดี 2"] },
           { pageId: "page-2", translations: ["สวัสดี 3"] },
         ],
+      };
+      expect(() =>
+        validateBatchTranslationResult(rawWithoutSourceTexts, [
+          { pageId: "page-1", expectedCount: 2 },
+          { pageId: "page-2", expectedCount: 1 },
+        ]),
+      ).toThrow(/missing required 'sourceTexts' transcription array for 2 dialogue boxes/i);
+    });
+
+    it("Issue #5: preserves legitimate zero-dialogue handling when sourceTexts is absent", () => {
+      const rawZeroDialogue = {
+        pages: [
+          { pageId: "cover-page", translations: [] },
+          { pageId: "art-spread", translations: [] },
+        ],
         usageMetadata: {
-          promptTokenCount: 1200,
-          candidatesTokenCount: 150,
-          totalTokenCount: 1350,
+          promptTokenCount: 600,
+          candidatesTokenCount: 50,
+          totalTokenCount: 650,
         },
       };
-      const validated = validateBatchTranslationResult(rawWithoutSourceTexts, [
-        { pageId: "page-1", expectedCount: 2 },
-        { pageId: "page-2", expectedCount: 1 },
+      const validated = validateBatchTranslationResult(rawZeroDialogue, [
+        { pageId: "cover-page", expectedCount: 0 },
+        { pageId: "art-spread", expectedCount: 0 },
       ]);
       expect(validated.pages[0].sourceTexts).toBeUndefined();
       expect(validated.pages[1].sourceTexts).toBeUndefined();
-      expect(validated.usageMetadata?.totalTokenCount).toBe(1350);
+      expect(validated.usageMetadata?.totalTokenCount).toBe(650);
     });
   });
 

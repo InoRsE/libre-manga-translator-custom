@@ -18,6 +18,8 @@ import {
   createCbzBlob,
   formatCbzFilename,
   dataUrlToUint8Array,
+  uint8ArrayToBase64,
+  detectImageSignature,
   type CbzFileEntry,
 } from "@/lib/export/cbz";
 import { storage } from "#imports";
@@ -30,8 +32,16 @@ export type ChapterPrepStatus =
   | "partial"
   | "failed";
 
+export type ChapterDownloadState =
+  | "not_started"
+  | "archive_ready"
+  | "download_started"
+  | "download_completed"
+  | "download_failed";
+
 export interface ChapterPrepProgress {
   status: ChapterPrepStatus;
+  downloadState?: ChapterDownloadState;
   expectedCount?: number;
   discovered: number;
   discoveredCount?: number;
@@ -80,11 +90,28 @@ export function normalizeImageSrc(img: HTMLImageElement): void {
 
 /**
  * Determines whether an element qualifies as a candidate manga page image.
+ * Strictly excludes advertisements, thumbnails, user avatars, and navigation icons.
  */
 export function isCandidateMangaImage(
   img: MangaTargetElement,
   activeRule: SiteRule | null,
 ): boolean {
+  if (typeof HTMLElement !== "undefined" && img instanceof HTMLElement) {
+    // Check if element or parent matches known ad/sidebar patterns
+    try {
+      if (
+        img.matches(
+          ".ad, .banner, .promo, [id*='google_ads'], [class*='advertisement'], [class*='sponsor'], [class*='sidebar']",
+        ) ||
+        img.closest(
+          ".ad, .banner, .promo, [id*='google_ads'], [class*='advertisement'], [class*='sponsor'], [class*='sidebar'], footer, header, nav",
+        )
+      ) {
+        return false;
+      }
+    } catch {}
+  }
+
   if (activeRule?.imageSelector) {
     try {
       if (img.matches(activeRule.imageSelector)) return true;
@@ -106,7 +133,7 @@ export function isCandidateMangaImage(
   }
 
   // Pre-loaded lazy images might have 0 dimensions initially; check data-src
-  if (img instanceof HTMLImageElement) {
+  if (typeof HTMLImageElement !== "undefined" && img instanceof HTMLImageElement) {
     const hasDataSrc =
       img.hasAttribute("data-src") ||
       img.hasAttribute("data-lazy-src") ||
@@ -119,6 +146,7 @@ export function isCandidateMangaImage(
 
 /**
  * Extracts total expected page count from page metadata, reader controls, or DOM.
+ * Does not assume any fixed count per chapter.
  */
 export function extractExpectedPageCount(
   doc: Document = document,
@@ -202,8 +230,7 @@ export function extractExpectedPageCount(
 }
 
 /**
- * Discovers all chapter manga page images in document order without
- * requiring IntersectionObserver viewport intersection.
+ * Discovers currently mounted chapter manga page images in document order.
  */
 export function findChapterImages(
   activeRule: SiteRule | null,
@@ -278,9 +305,11 @@ export function findChapterImages(
       typeof Node !== "undefined" ? Node.DOCUMENT_POSITION_PRECEDING : 2;
     validImages.sort((a, b) => {
       if (a === b) return 0;
-      const pos = a.compareDocumentPosition(b);
-      if (pos & FOLLOWING) return -1;
-      if (pos & PRECEDING) return 1;
+      try {
+        const pos = a.compareDocumentPosition(b);
+        if (pos & FOLLOWING) return -1;
+        if (pos & PRECEDING) return 1;
+      } catch {}
       return 0;
     });
   }
@@ -289,8 +318,9 @@ export function findChapterImages(
 }
 
 /**
- * Progressively triggers discovery on virtualized/lazy-scrolling readers until
- * all expected pages are mounted into the DOM.
+ * Progressively triggers discovery on virtualized/lazy-scrolling readers.
+ * Accumulates unique page identities across scrolling steps so pages unmounted
+ * by the virtualizer are preserved.
  */
 export async function discoverChapterImagesProgressive(
   activeRule: SiteRule | null,
@@ -304,19 +334,28 @@ export async function discoverChapterImagesProgressive(
   expectedCount: number;
   discoveredCount: number;
 }> {
-  const expectedCount =
-    options?.expectedCount ??
-    extractExpectedPageCount(document, activeRule) ??
-    findChapterImages(activeRule).length;
+  const detectedExpected =
+    options?.expectedCount ?? extractExpectedPageCount(document, activeRule);
 
-  let images = findChapterImages(activeRule);
+  // Accumulate pages across all scroll steps to prevent virtualized unmount loss
+  const accumulatedMap = new Map<string, MangaTargetElement>();
+  const initialImages = findChapterImages(activeRule);
+  for (const img of initialImages) {
+    const src = getElementSrc(img);
+    const k = src ? Registry.srcKeyOf(src) : "";
+    if (k && !accumulatedMap.has(k)) {
+      accumulatedMap.set(k, img);
+    }
+  }
 
-  // If we already discovered all expected pages (or no expected count known), return immediately
-  if (images.length >= expectedCount || expectedCount === 0) {
+  const expectedCount = detectedExpected ?? accumulatedMap.size;
+
+  // If already discovered all expected pages (or no expected count known and 0 found)
+  if (accumulatedMap.size >= expectedCount && expectedCount > 0) {
     return {
-      images,
-      expectedCount: Math.max(expectedCount, images.length),
-      discoveredCount: images.length,
+      images: Array.from(accumulatedMap.values()),
+      expectedCount,
+      discoveredCount: accumulatedMap.size,
     };
   }
 
@@ -340,7 +379,10 @@ export async function discoverChapterImagesProgressive(
       : 1000;
     if (container && container !== document.documentElement) {
       container.scrollTop += scrollStep;
-    } else if (typeof window !== "undefined") {
+    } else if (
+      typeof window !== "undefined" &&
+      typeof window.scrollBy === "function"
+    ) {
       window.scrollBy(0, scrollStep);
     }
 
@@ -355,8 +397,16 @@ export async function discoverChapterImagesProgressive(
 
     await new Promise((r) => setTimeout(r, delayMs));
 
-    images = findChapterImages(activeRule);
-    if (images.length >= expectedCount) {
+    const stepImages = findChapterImages(activeRule);
+    for (const img of stepImages) {
+      const src = getElementSrc(img);
+      const k = src ? Registry.srcKeyOf(src) : "";
+      if (k && !accumulatedMap.has(k)) {
+        accumulatedMap.set(k, img);
+      }
+    }
+
+    if (expectedCount > 0 && accumulatedMap.size >= expectedCount) {
       break;
     }
 
@@ -372,24 +422,29 @@ export async function discoverChapterImagesProgressive(
   // Restore scroll position
   if (container && container !== document.documentElement) {
     container.scrollTop = originalScrollTop;
-  } else if (typeof window !== "undefined") {
+  } else if (
+    typeof window !== "undefined" &&
+    typeof window.scrollTo === "function"
+  ) {
     window.scrollTo(0, originalScrollTop);
   }
 
+  const finalImages = Array.from(accumulatedMap.values());
   return {
-    images,
-    expectedCount: Math.max(expectedCount, images.length),
-    discoveredCount: images.length,
+    images: finalImages,
+    expectedCount: Math.max(expectedCount, finalImages.length),
+    discoveredCount: finalImages.length,
   };
 }
 
 /**
  * Manages full chapter preparation in document order, tracking truthful
- * completed / discovered / failed counters and background-tab keep-alives.
+ * completed / discovered / failed counters, durable write ordering, and automatic CBZ export.
  */
 export class ChapterPreparationManager {
   private orchestrator: AutoTranslateOrchestrator;
   private status: ChapterPrepStatus = "idle";
+  private downloadState: ChapterDownloadState = "not_started";
   private expectedCount = 0;
   private discovered = 0;
   private fetchedCount = 0;
@@ -397,6 +452,7 @@ export class ChapterPreparationManager {
   private completedKeys = new Set<string>();
   private failedKeys = new Set<string>();
   private inFlightKeys = new Set<string>();
+  private savingKeys = new Set<string>();
   private targetKeys = new Set<string>();
   private imageIndexMap = new Map<string, number>();
   private orderedImages: MangaTargetElement[] = [];
@@ -435,15 +491,33 @@ export class ChapterPreparationManager {
 
       if (detail.status === "done") {
         if (this.targetKeys.has(k)) {
-          this.inFlightKeys.delete(k);
-          this.completedKeys.add(k);
-          this.verifiedCount++;
-          this.failedKeys.delete(k);
           this.targetKeys.delete(k);
+          this.inFlightKeys.delete(k);
 
-          // Save page to durable offline store
-          const pageIdx = this.imageIndexMap.get(k) ?? (this.completedKeys.size - 1);
+          // M1.4.1 REPAIR B: Verify rendered image asset before marking verified
           const rendered = Registry.getRenderedResult(detail.src);
+          const renderedUrl = rendered?.renderedUrl;
+          const isValidDataUrl =
+            typeof renderedUrl === "string" &&
+            (renderedUrl.startsWith("data:image/") || renderedUrl.startsWith("blob:"));
+
+          if (!isValidDataUrl) {
+            console.warn(`[LMT] Rendered image missing or invalid for page: ${detail.src}`);
+            this.failedKeys.add(k);
+            this.checkSettled();
+            return;
+          }
+
+          const pageIdx = this.imageIndexMap.get(k) ?? -1;
+          if (pageIdx < 0) {
+            console.warn(`[LMT] Page index not mapped for page: ${detail.src}`);
+            this.failedKeys.add(k);
+            this.checkSettled();
+            return;
+          }
+
+          // Await durable write before counting as verified (no fire-and-forget race!)
+          this.savingKeys.add(k);
           savePageRecord({
             id: `${this.chapterKey}__page_${pageIdx}`,
             chapterKey: this.chapterKey,
@@ -451,17 +525,26 @@ export class ChapterPreparationManager {
             pageNumber: pageIdx + 1,
             src: detail.src,
             mimeType: "image/png",
-            renderedDataUrl: rendered?.renderedUrl,
+            renderedDataUrl: renderedUrl,
             translations: rendered?.translations ?? [],
             sourceTexts: rendered?.sourceTexts,
             verified: true,
             status: "done",
             updatedAt: Date.now(),
-          }).catch((err) => {
-            console.warn("LMT: Failed to persist page to offline store:", err);
-          });
-
-          this.checkSettled();
+          })
+            .then(() => {
+              this.completedKeys.add(k);
+              this.verifiedCount++;
+              this.failedKeys.delete(k);
+            })
+            .catch((err) => {
+              console.error(`[LMT] Durable write failed for page ${pageIdx + 1}:`, err);
+              this.failedKeys.add(k);
+            })
+            .finally(() => {
+              this.savingKeys.delete(k);
+              this.checkSettled();
+            });
         }
         return;
       }
@@ -549,7 +632,7 @@ export class ChapterPreparationManager {
 
   private updateProgressMessage(): void {
     if (this.status === "preparing") {
-      const total = this.discovered;
+      const total = this.expectedCount || this.discovered;
       const done = this.completedKeys.size;
       const failed = this.failedKeys.size;
       const inFlight = this.inFlightKeys.size;
@@ -563,17 +646,28 @@ export class ChapterPreparationManager {
     this.updateProgressMessage();
     this.emitProgress();
 
-    if (this.targetKeys.size === 0) {
+    // Settle only when all scheduled targets, in-flight operations, and durable writes finish
+    if (
+      this.targetKeys.size === 0 &&
+      this.inFlightKeys.size === 0 &&
+      this.savingKeys.size === 0
+    ) {
       this.stopHeartbeat();
       this.endTime = Date.now();
 
-      const total = this.discovered;
+      const expected = this.expectedCount;
+      const discovered = this.discovered;
       const done = this.completedKeys.size;
       const failed = this.failedKeys.size;
 
-      if (done === total && total > 0) {
+      // M1.4.1 REPAIR A: Strict readiness check.
+      // A chapter is ONLY ready if every expected page was discovered, completed, and verified without failures!
+      const isCompleteDiscovery = expected > 0 && discovered === expected;
+      const isAllVerified = done === expected && failed === 0;
+
+      if (isCompleteDiscovery && isAllVerified) {
         this.status = "ready";
-        this.message = `Ready! All ${done}/${total} pages prepared successfully.`;
+        this.message = `Ready! All ${done}/${expected} pages prepared and verified successfully.`;
 
         // Persist chapter manifest to IndexedDB
         await saveChapterRecord({
@@ -595,22 +689,19 @@ export class ChapterPreparationManager {
           console.warn("LMT: Failed to persist chapter manifest:", err);
         });
 
-        // Trigger automatic CBZ export & download with zero confirmation prompts
+        // Trigger automatic CBZ export & download
         await this.exportAndDownloadCbz();
-
-        if (this.shouldNotify) {
-          this.sendNotification(
-            "Chapter Ready & Downloaded!",
-            `All ${done} pages of ${this.chapterTitle || "chapter"} prepared and exported to CBZ.`,
-          );
-        }
       } else if (done > 0) {
         this.status = "partial";
-        this.message = `Partial: ${done}/${total} completed, ${failed} failed.`;
+        if (!isCompleteDiscovery) {
+          this.message = `Partial: Incomplete discovery (${discovered}/${expected} pages found, ${done} prepared).`;
+        } else {
+          this.message = `Partial: ${done}/${expected} completed (${failed} failed).`;
+        }
         if (this.shouldNotify) {
           this.sendNotification(
             "Chapter Partially Ready",
-            `${done}/${total} pages translated (${failed} failed).`,
+            `${done}/${expected} pages translated (${failed} failed).`,
           );
         }
       } else {
@@ -625,9 +716,42 @@ export class ChapterPreparationManager {
   /**
    * Packages all completed and verified pages into an ordered CBZ archive
    * and requests browser download with zero user prompts (saveAs: false).
+   * M1.4.1 REPAIR C & D: Enforces exact page image count, validates binary signatures,
+   * eliminates .txt placeholders, and awaits browser download completion.
    */
-  async exportAndDownloadCbz(): Promise<boolean> {
+  async exportAndDownloadCbz(overrideChapterKey?: string): Promise<boolean> {
     try {
+      if (overrideChapterKey) {
+        this.chapterKey = overrideChapterKey;
+      }
+      if (!this.chapterKey) {
+        try {
+          const siteRule = await getSiteRule();
+          this.seriesName = siteRule.seriesName || "MANGA";
+          this.chapterId = siteRule.chapterId || "001";
+          this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
+          this.chapterTitle =
+            siteRule.seriesName && siteRule.chapterId
+              ? `${siteRule.seriesName} · Ch.${siteRule.chapterId}`
+              : document.title;
+        } catch {
+          this.seriesName = "MANGA";
+          this.chapterId = "001";
+          this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
+          this.chapterTitle = document.title;
+        }
+      }
+
+      if (this.chapterKey) {
+        const record = await getChapterRecord(this.chapterKey);
+        if (record) {
+          if (!this.expectedCount) this.expectedCount = record.expectedCount;
+          if (record.seriesName) this.seriesName = record.seriesName;
+          if (record.chapterId) this.chapterId = record.chapterId;
+          if (record.chapterTitle) this.chapterTitle = record.chapterTitle;
+        }
+      }
+
       const targetLang =
         (await storage.getItem<string>("sync:target-lang")) ??
         DefaultConfig.targetLang;
@@ -638,49 +762,57 @@ export class ChapterPreparationManager {
         targetLang,
       );
 
-      // Collect rendered pages from offline store or registry
+      // Collect rendered pages from durable offline store
       const storedPages = await getChapterPages(this.chapterKey);
       const entries: CbzFileEntry[] = [];
+      const totalPages =
+        this.expectedCount || storedPages.length || this.orderedImages.length;
 
-      for (let i = 0; i < this.orderedImages.length; i++) {
-        const img = this.orderedImages[i];
-        const src = getElementSrc(img);
-        const k = Registry.srcKeyOf(src);
-        const pageNumber = i + 1;
-        const pageFileName = `${String(pageNumber).padStart(3, "0")}.png`;
-
-        let dataUrl = "";
-        const stored = storedPages.find((p) => p.pageIndex === i);
-        if (stored?.renderedDataUrl) {
-          dataUrl = stored.renderedDataUrl;
-        } else {
-          const liveResult = Registry.getRenderedResult(src);
-          dataUrl = liveResult?.renderedUrl || "";
-        }
-
-        if (dataUrl && dataUrl.startsWith("data:")) {
-          const bytes = dataUrlToUint8Array(dataUrl);
-          entries.push({ name: pageFileName, data: bytes });
-        } else {
-          // Fallback: create placeholder text file for art spreads without text
-          const encoder = new TextEncoder();
-          entries.push({
-            name: `${String(pageNumber).padStart(3, "0")}.txt`,
-            data: encoder.encode(`Page ${pageNumber} original: ${src}`),
-          });
-        }
+      if (totalPages === 0) {
+        throw new Error("CBZ Export Failed: Chapter has 0 pages");
       }
 
-      // Add manifest.json inside CBZ
+      for (let i = 0; i < totalPages; i++) {
+        const pageNumber = i + 1;
+        const stored = storedPages.find((p) => p.pageIndex === i);
+
+        if (!stored || !stored.verified || !stored.renderedDataUrl) {
+          // Strictly fail export if any expected page is missing or unverified
+          throw new Error(
+            `CBZ Export Failed: Page ${pageNumber} of ${totalPages} is missing or not durably verified`,
+          );
+        }
+
+        const dataUrl = stored.renderedDataUrl;
+        if (!dataUrl.startsWith("data:")) {
+          throw new Error(
+            `CBZ Export Failed: Page ${pageNumber} has invalid image data format`,
+          );
+        }
+
+        const bytes = dataUrlToUint8Array(dataUrl);
+        const sig = detectImageSignature(bytes);
+        if (!sig) {
+          // Reject corrupt or non-image data
+          throw new Error(
+            `CBZ Export Failed: Page ${pageNumber} contains corrupt or unrecognized image signature`,
+          );
+        }
+
+        const pageFileName = `${String(pageNumber).padStart(3, "0")}.${sig.ext}`;
+        entries.push({ name: pageFileName, data: bytes });
+      }
+
+      // Add manifest.json metadata inside CBZ
       const manifestPayload = {
         seriesName: this.seriesName,
         chapterId: this.chapterId,
         chapterTitle: this.chapterTitle,
         targetLanguage: targetLang,
-        pageCount: this.orderedImages.length,
+        pageCount: entries.length,
         verifiedCount: this.completedKeys.size,
         exportedAt: new Date().toISOString(),
-        generator: "Libre Manga Translator (LMT M1.4)",
+        generator: "Libre Manga Translator (LMT M1.4.1)",
       };
       const encoder = new TextEncoder();
       entries.push({
@@ -688,39 +820,76 @@ export class ChapterPreparationManager {
         data: encoder.encode(JSON.stringify(manifestPayload, null, 2)),
       });
 
-      const cbzBlob = createCbzBlob(entries);
+      this.downloadState = "archive_ready";
+      this.emitProgress();
 
-      // Convert Blob to Data URL for Chrome download API
+      const cbzArchiveBytes = createCbzBlob(entries);
+
+      // Safe base64 conversion
       let cbzDataUrl = "";
       if (typeof FileReader !== "undefined") {
         cbzDataUrl = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result as string);
           reader.onerror = () => reject(reader.error);
-          reader.readAsDataURL(cbzBlob);
+          reader.readAsDataURL(cbzArchiveBytes);
         });
       } else {
-        const buffer = await cbzBlob.arrayBuffer();
+        const buffer = await cbzArchiveBytes.arrayBuffer();
         const b64 = Buffer.from(buffer).toString("base64");
         cbzDataUrl = `data:application/vnd.comicbook+zip;base64,${b64}`;
       }
+
+      this.downloadState = "download_started";
+      this.emitProgress();
 
       const resp = await browser.runtime.sendMessage({
         type: "DOWNLOAD_CHAPTER_CBZ",
         data: { dataUrl: cbzDataUrl, filename },
       });
 
-      if (resp?.success) {
+      // M1.4.1 REPAIR D: Observe actual download completion before notifying
+      if (resp?.success && resp?.downloadState === "download_completed") {
+        this.downloadState = "download_completed";
         this.exportStatus = "exported";
         this.exportedFilename = filename;
         await markChapterExported(this.chapterKey, filename);
-        console.log(`[LMT CBZ] Successfully downloaded ${filename}`);
+        console.log(`[LMT CBZ] Successfully downloaded and confirmed: ${filename}`);
+
+        if (this.shouldNotify) {
+          this.sendNotification(
+            "Chapter Ready & Downloaded!",
+            `All ${totalPages} pages of ${this.chapterTitle || "chapter"} prepared and exported to ${filename}.`,
+          );
+        }
+        this.emitProgress();
         return true;
+      } else {
+        this.downloadState = "download_failed";
+        const errMsg = resp?.error || "Browser download failed";
+        console.warn("[LMT CBZ] Download failed:", errMsg);
+        this.message = `Chapter ready, but download failed: ${errMsg}`;
+        if (this.shouldNotify) {
+          this.sendNotification("Chapter Download Failed", errMsg);
+        }
+        this.emitProgress();
+        return false;
       }
     } catch (err: any) {
+      this.downloadState = "download_failed";
       console.warn("LMT: Automatic CBZ download failed:", err?.message);
+      this.message = `CBZ export error: ${err?.message}`;
+      this.emitProgress();
     }
     return false;
+  }
+
+  /**
+   * Re-exports an already prepared chapter directly from durable offline store
+   * without triggering any Gemini inference API calls.
+   */
+  async reExportChapter(targetChapterKey?: string): Promise<boolean> {
+    return this.exportAndDownloadCbz(targetChapterKey);
   }
 
   private sendNotification(title: string, message: string): void {
@@ -738,9 +907,11 @@ export class ChapterPreparationManager {
     this.shouldNotify = options?.notify ?? true;
     this.startTime = Date.now();
     this.endTime = undefined;
+    this.downloadState = "not_started";
     this.completedKeys.clear();
     this.failedKeys.clear();
     this.inFlightKeys.clear();
+    this.savingKeys.clear();
     this.targetKeys.clear();
     this.imageIndexMap.clear();
 
@@ -777,6 +948,15 @@ export class ChapterPreparationManager {
       return this.getProgress();
     }
 
+    // M1.4.1 REPAIR A: Incomplete discovery guard
+    // If expected count is known and discovery is incomplete, report partial and never mark ready!
+    if (this.expectedCount > 0 && this.discovered < this.expectedCount) {
+      this.status = "partial";
+      this.message = `Incomplete chapter discovery: found ${this.discovered} of ${this.expectedCount} pages. Chapter cannot be marked Ready.`;
+      this.emitProgress();
+      return this.getProgress();
+    }
+
     this.status = "preparing";
     const pendingImages: MangaTargetElement[] = [];
 
@@ -809,6 +989,24 @@ export class ChapterPreparationManager {
       this.status = "ready";
       this.message = `Ready! All ${this.discovered} pages already translated from cache.`;
       this.endTime = Date.now();
+      await saveChapterRecord({
+        id: this.chapterKey,
+        seriesName: this.seriesName,
+        chapterId: this.chapterId,
+        chapterTitle: this.chapterTitle,
+        url: typeof window !== "undefined" ? window.location.href : "",
+        createdAt: this.startTime ?? Date.now(),
+        updatedAt: this.endTime,
+        expectedCount: this.expectedCount,
+        discoveredCount: this.discovered,
+        fetchedCount: this.fetchedCount,
+        verifiedCount: this.completedKeys.size,
+        status: "ready",
+        exportStatus: this.exportStatus,
+        exportedFilename: this.exportedFilename,
+      }).catch((err) => {
+        console.warn("LMT: Failed to persist chapter manifest:", err);
+      });
       await this.exportAndDownloadCbz();
       this.emitProgress();
       return this.getProgress();
@@ -831,10 +1029,11 @@ export class ChapterPreparationManager {
     this.endTime = Date.now();
     this.targetKeys.clear();
     this.inFlightKeys.clear();
+    this.savingKeys.clear();
 
     if (this.status === "preparing") {
       this.status = this.completedKeys.size > 0 ? "partial" : "idle";
-      this.message = `Preparation stopped. ${this.completedKeys.size}/${this.discovered} pages completed.`;
+      this.message = `Preparation stopped. ${this.completedKeys.size}/${this.expectedCount || this.discovered} pages completed.`;
       this.emitProgress();
     }
 
@@ -850,12 +1049,13 @@ export class ChapterPreparationManager {
 
     return {
       status: this.status,
+      downloadState: this.downloadState,
       expectedCount: this.expectedCount,
       discovered: this.discovered,
       discoveredCount: this.discovered,
       fetchedCount: this.fetchedCount,
       completed: this.completedKeys.size,
-      verifiedCount: this.completedKeys.size,
+      verifiedCount: this.verifiedCount,
       failed: this.failedKeys.size,
       inFlight: this.inFlightKeys.size,
       chapterTitle: this.chapterTitle,

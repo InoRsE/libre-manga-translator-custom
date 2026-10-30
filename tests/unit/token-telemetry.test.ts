@@ -58,8 +58,8 @@ describe("Gemini Token Telemetry (M1.4 ACTION D)", () => {
   it("propagates usageMetadata through validateBatchTranslationResult", () => {
     const raw = {
       pages: [
-        { pageId: "p1", translations: ["คำแปล 1"] },
-        { pageId: "p2", translations: ["คำแปล 2"] },
+        { pageId: "p1", translations: ["คำแปล 1"], sourceTexts: ["dialogue 1"] },
+        { pageId: "p2", translations: ["คำแปล 2"], sourceTexts: ["dialogue 2"] },
       ],
       usageMetadata: {
         promptTokenCount: 2100,

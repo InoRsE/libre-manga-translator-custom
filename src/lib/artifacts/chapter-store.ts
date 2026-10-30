@@ -45,6 +45,13 @@ const STORE_PAGES = "pages";
 // In-memory fallback for non-browser environments (e.g. Bun unit tests)
 const memoryChapters = new Map<string, StoredChapter>();
 const memoryPages = new Map<string, StoredPage>();
+let mockSavePageFailureHook: ((page: StoredPage) => Error | null) | null = null;
+
+export function setMockSavePageFailureHook(
+  fn: ((page: StoredPage) => Error | null) | null,
+): void {
+  mockSavePageFailureHook = fn;
+}
 
 function hasIndexedDb(): boolean {
   return typeof indexedDB !== "undefined";
@@ -116,6 +123,10 @@ export async function getChapterRecord(chapterKey: string): Promise<StoredChapte
 }
 
 export async function savePageRecord(page: StoredPage): Promise<void> {
+  if (mockSavePageFailureHook) {
+    const err = mockSavePageFailureHook(page);
+    if (err) throw err;
+  }
   if (!hasIndexedDb()) {
     memoryPages.set(page.id, { ...page, updatedAt: Date.now() });
     return;
@@ -192,4 +203,5 @@ export async function markChapterExported(
 export function clearInMemoryStore(): void {
   memoryChapters.clear();
   memoryPages.clear();
+  mockSavePageFailureHook = null;
 }

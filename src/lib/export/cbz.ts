@@ -1,5 +1,5 @@
 /**
- * Pure TypeScript CBZ (Comic Book Zip) Archive Generator
+ * Pure TypeScript CBZ (Comic Book Zip) Archive Generator & Independent Reader
  * Zero runtime dependencies, high performance Method 0 (Store).
  */
 
@@ -25,8 +25,63 @@ export interface CbzFileEntry {
   data: Uint8Array;
 }
 
+export interface ImageTypeInfo {
+  mime: string;
+  ext: string;
+}
+
 /**
- * Creates a valid, standard-compliant .CBZ (ZIP) Blob from in-memory file entries.
+ * Inspects binary magic numbers to verify image format integrity.
+ * Returns { mime, ext } if valid, or null if the bytes do not represent a valid image.
+ */
+export function detectImageSignature(bytes: Uint8Array): ImageTypeInfo | null {
+  if (!bytes || bytes.length < 4) return null;
+
+  // PNG: 89 50 4E 47 (\x89PNG)
+  if (
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return { mime: "image/png", ext: "png" };
+  }
+
+  // JPEG: FF D8 FF
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { mime: "image/jpeg", ext: "jpg" };
+  }
+
+  // WebP: RIFF .... WEBP
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return { mime: "image/webp", ext: "webp" };
+  }
+
+  // GIF: GIF8
+  if (
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38
+  ) {
+    return { mime: "image/gif", ext: "gif" };
+  }
+
+  return null;
+}
+
+/**
+ * Creates a valid, standard-compliant .CBZ (ZIP) archive from in-memory file entries.
  * Uses Compression Method 0 (Store), which is optimal for already compressed images
  * (JPEG, PNG, WebP) and avoids heavy WASM/CPU overhead.
  */
@@ -41,7 +96,6 @@ export function createCbzArchive(entries: CbzFileEntry[]): Uint8Array {
     dosDate: number;
   }> = [];
 
-  // Current DOS date/time: 2026-10-30 10:00:00
   const now = new Date();
   const dosTime =
     ((now.getHours() & 0x1f) << 11) |
@@ -140,7 +194,6 @@ export function createCbzArchive(entries: CbzFileEntry[]): Uint8Array {
   eocdView.setUint32(16, centralDirectoryOffset, true); // Offset of start of central directory
   eocdView.setUint16(20, 0, true); // Comment length
 
-  // Assemble full archive
   const totalLength = currentOffset + eocd.length;
   const archive = new Uint8Array(totalLength);
 
@@ -155,7 +208,94 @@ export function createCbzArchive(entries: CbzFileEntry[]): Uint8Array {
 
 export function createCbzBlob(entries: CbzFileEntry[]): Blob {
   const archiveBytes = createCbzArchive(entries);
-  return new Blob([archiveBytes as any], { type: "application/vnd.comicbook+zip" });
+  return new Blob([archiveBytes as any], {
+    type: "application/vnd.comicbook+zip",
+  });
+}
+
+/**
+ * Independent ZIP reader and integrity validator.
+ * Parses and verifies central directory, local file headers, and CRC-32 checksums.
+ */
+export function parseZipArchive(archiveBytes: Uint8Array): {
+  files: Array<{
+    name: string;
+    data: Uint8Array;
+    crc: number;
+    isValidCrc: boolean;
+  }>;
+} {
+  const decoder = new TextDecoder();
+  const view = new DataView(
+    archiveBytes.buffer,
+    archiveBytes.byteOffset,
+    archiveBytes.byteLength,
+  );
+
+  // Find EOCD (search from back)
+  let eocdOffset = -1;
+  for (let i = archiveBytes.length - 22; i >= 0; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocdOffset = i;
+      break;
+    }
+  }
+
+  if (eocdOffset === -1) {
+    throw new Error("Invalid ZIP archive: End of Central Directory signature not found");
+  }
+
+  const totalEntries = view.getUint16(eocdOffset + 10, true);
+  const cdOffset = view.getUint32(eocdOffset + 16, true);
+
+  const files: Array<{
+    name: string;
+    data: Uint8Array;
+    crc: number;
+    isValidCrc: boolean;
+  }> = [];
+
+  let currentCdPos = cdOffset;
+  for (let i = 0; i < totalEntries; i++) {
+    if (view.getUint32(currentCdPos, true) !== 0x02014b50) {
+      throw new Error(`Invalid Central Directory header signature at offset ${currentCdPos}`);
+    }
+
+    const expectedCrc = view.getUint32(currentCdPos + 16, true);
+    const uncompressedSize = view.getUint32(currentCdPos + 24, true);
+    const nameLength = view.getUint16(currentCdPos + 28, true);
+    const extraLength = view.getUint16(currentCdPos + 30, true);
+    const commentLength = view.getUint16(currentCdPos + 32, true);
+    const localHeaderOffset = view.getUint32(currentCdPos + 42, true);
+
+    const nameBytes = archiveBytes.subarray(
+      currentCdPos + 46,
+      currentCdPos + 46 + nameLength,
+    );
+    const fileName = decoder.decode(nameBytes);
+
+    // Read local header
+    if (view.getUint32(localHeaderOffset, true) !== 0x04034b50) {
+      throw new Error(`Invalid Local File header signature at offset ${localHeaderOffset}`);
+    }
+    const localNameLength = view.getUint16(localHeaderOffset + 26, true);
+    const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
+    const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
+
+    const data = archiveBytes.subarray(dataStart, dataStart + uncompressedSize);
+    const computedCrc = computeCrc32(data);
+
+    files.push({
+      name: fileName,
+      data,
+      crc: expectedCrc,
+      isValidCrc: computedCrc === expectedCrc,
+    });
+
+    currentCdPos += 46 + nameLength + extraLength + commentLength;
+  }
+
+  return { files };
 }
 
 /**
@@ -173,7 +313,6 @@ export function formatCbzFilename(
     .replace(/\s+/g, "_")
     .toUpperCase();
 
-  // Normalize chapter number: pad integers to 3 digits (e.g. 54 -> 054, 1 -> 001)
   const chNum = parseFloat(chapterId);
   const chStr = !isNaN(chNum)
     ? Number.isInteger(chNum)
@@ -197,4 +336,20 @@ export function dataUrlToUint8Array(dataUrl: string): Uint8Array {
     bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes;
+}
+
+/**
+ * Safe, chunked binary to base64 converter avoiding call stack overflow.
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const len = bytes.byteLength;
+  const chunkSize = 0x8000; // 32KB
+  for (let i = 0; i < len; i += chunkSize) {
+    binary += String.fromCharCode.apply(
+      null,
+      bytes.subarray(i, Math.min(i + chunkSize, len)) as any,
+    );
+  }
+  return btoa(binary);
 }
