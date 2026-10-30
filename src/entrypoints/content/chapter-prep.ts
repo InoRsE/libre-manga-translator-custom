@@ -47,8 +47,11 @@ export type ChapterDownloadState =
 
 export type CollectorVerdict =
   | "COLLECTOR_LIVE_VERIFIED"
+  | "READY_FOR_OWNER_RETEST"
   | "READY_FOR_OWNER_BROWSER_ACCEPTANCE"
+  | "PARTIAL_WITH_VERIFIED_BLOCKERS"
   | "COLLECTOR_PARTIAL_WITH_BLOCKERS"
+  | "BLOCKED"
   | "BLOCKED_ARCHITECTURE"
   | "ELIGIBLE_FOR_PROCESSING"
   | "INCOMPLETE_DISCOVERY"
@@ -76,6 +79,7 @@ export interface ChapterDiagnosticResult {
   chapterInternalId?: string;
   chapterTitle: string;
   url: string;
+  strategy?: string;
   expectedCount: number; // 0 if unknown
   discoveredCount: number;
   mountedCount?: number;
@@ -91,6 +95,8 @@ export interface ChapterDiagnosticResult {
     isAcquired?: boolean;
     isUsableAsset: boolean;
     hasCachedTranslation: boolean;
+    fetchStatus?: number | string;
+    error?: string;
     width?: number;
     height?: number;
     byteLength?: number;
@@ -141,7 +147,7 @@ export function getCapturedPagesFromBridge(doc: Document = document): Array<{
         return parsed.map((item, idx) => ({
           pageNumber: item.pageNumber ?? (item.index !== undefined ? item.index + 1 : idx + 1),
           pageIndex: item.index ?? (item.pageNumber ? item.pageNumber - 1 : idx),
-          src: item.url,
+          src: item.src || item.url,
           width: item.width,
           height: item.height,
         }));
@@ -155,7 +161,7 @@ export function getCapturedPagesFromBridge(doc: Document = document): Array<{
       return winPages.map((item, idx) => ({
         pageNumber: item.pageNumber ?? (item.index !== undefined ? item.index + 1 : idx + 1),
         pageIndex: item.index ?? (item.pageNumber ? item.pageNumber - 1 : idx),
-        src: item.url,
+        src: item.src || item.url,
         width: item.width,
         height: item.height,
       }));
@@ -163,6 +169,38 @@ export function getCapturedPagesFromBridge(doc: Document = document): Array<{
   }
 
   return [];
+}
+
+/**
+ * Ensures native reader preloading is activated on Comix.to / Comix.ws.
+ * Comix stores user reader preferences in localStorage under 'reader.default.v3'
+ * and 'reader.webtoon.v3'. Setting preload to 'all' instructs the React reader
+ * to mount and preload all chapter page images eagerly.
+ */
+export function applyComixNativePreload(): boolean {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return false;
+    let modified = false;
+    for (const key of ["reader.default.v3", "reader.webtoon.v3"]) {
+      const item = window.localStorage.getItem(key);
+      if (item) {
+        try {
+          const parsed = JSON.parse(item);
+          if (parsed && typeof parsed === "object" && parsed.preload !== "all") {
+            parsed.preload = "all";
+            window.localStorage.setItem(key, JSON.stringify(parsed));
+            modified = true;
+          }
+        } catch {}
+      } else {
+        window.localStorage.setItem(key, JSON.stringify({ preload: "all" }));
+        modified = true;
+      }
+    }
+    return modified;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -184,14 +222,34 @@ export function extractChapterIdentity(doc: Document = document): {
     const initEl = doc.getElementById("initial-data");
     if (initEl?.textContent) {
       const parsed = JSON.parse(initEl.textContent);
-      if (parsed.chapterNumber !== undefined && parsed.chapterNumber !== null) {
+      if (parsed.read && typeof parsed.read === "object") {
+        if (parsed.read.chapterNumber !== undefined && parsed.read.chapterNumber !== null) {
+          chapterId = String(parsed.read.chapterNumber);
+        }
+        if (parsed.read.chapterId) {
+          chapterInternalId = String(parsed.read.chapterId);
+        }
+        if (parsed.read.mangaTitle || parsed.read.title) {
+          seriesName = parsed.read.mangaTitle || parsed.read.title;
+        }
+      }
+      if (chapterId === "001" && parsed.chapterNumber !== undefined && parsed.chapterNumber !== null) {
         chapterId = String(parsed.chapterNumber);
       }
-      if (parsed.chapterId) {
+      if (!chapterInternalId && parsed.chapterId) {
         chapterInternalId = String(parsed.chapterId);
       }
-      if (parsed.title || parsed.mangaTitle || parsed.seriesTitle) {
+      if (seriesName === "MANGA" && (parsed.title || parsed.mangaTitle || parsed.seriesTitle)) {
         seriesName = parsed.title || parsed.mangaTitle || parsed.seriesTitle;
+      }
+      if (seriesName === "MANGA" && parsed.queries && typeof parsed.queries === "object") {
+        for (const k of Object.keys(parsed.queries)) {
+          const q = parsed.queries[k];
+          if (q?.title) {
+            seriesName = q.title;
+            break;
+          }
+        }
       }
     }
   } catch {}
@@ -232,6 +290,139 @@ export function extractChapterIdentity(doc: Document = document): {
 }
 
 /**
+ * Specialized slot-based discovery for Comix.to / Comix.ws and modern readers
+ * that maintain explicit page slot containers (e.g. .rpage-page[data-page]).
+ * Iterates expected page slots, extracts child images, and performs bounded
+ * container scrolling on .rpage-main if virtualized slots need mounting.
+ */
+export async function discoverSlotBasedPages(
+  doc: Document = document,
+  activeRule?: SiteRule | null,
+  options?: {
+    expectedCount?: number;
+    maxScrollAttempts?: number;
+    scrollDelayMs?: number;
+  },
+): Promise<ChapterPageItem[] | null> {
+  const slotElements = Array.from(
+    doc.querySelectorAll<HTMLElement>(".rpage-page[data-page], .rpage-page"),
+  );
+  if (slotElements.length === 0) {
+    return null; // Not a Comix-style slot-based reader
+  }
+
+  // Determine total slot count
+  const targetCount = options?.expectedCount || slotElements.length;
+
+  // Find scroll container (.rpage-main)
+  const container =
+    doc.querySelector<HTMLElement>(".rpage-main") ||
+    (activeRule?.containerSelector
+      ? doc.querySelector<HTMLElement>(activeRule.containerSelector)
+      : null);
+
+  const maxAttempts = options?.maxScrollAttempts ?? 15;
+  const delayMs = options?.scrollDelayMs ?? 40;
+
+  // Helper to extract page items from current DOM slots
+  const extractItems = (): Map<
+    number,
+    { el?: MangaTargetElement; src: string; isMounted: boolean; width?: number; height?: number }
+  > => {
+    const map = new Map<
+      number,
+      { el?: MangaTargetElement; src: string; isMounted: boolean; width?: number; height?: number }
+    >();
+    const currentSlots = doc.querySelectorAll<HTMLElement>(".rpage-page[data-page], .rpage-page");
+
+    currentSlots.forEach((slot, index) => {
+      const dataPage = slot.getAttribute("data-page");
+      const pageNum = dataPage ? parseInt(dataPage, 10) : index + 1;
+      if (isNaN(pageNum) || pageNum <= 0) return;
+
+      const img = slot.querySelector<MangaTargetElement>("img.rpage-page__img, img, canvas");
+      if (img) {
+        if (img instanceof HTMLImageElement) {
+          normalizeImageSrc(img);
+        }
+        const src = getElementSrc(img) || (img instanceof HTMLImageElement ? img.src : "");
+        if (src && !src.startsWith("data:image/svg") && !src.includes("placeholder")) {
+          const isMounted = doc.body?.contains(img) === true;
+          const w = "naturalWidth" in img ? img.naturalWidth : img.width;
+          const h = "naturalHeight" in img ? img.naturalHeight : img.height;
+          map.set(pageNum, {
+            el: isMounted ? img : undefined,
+            src,
+            isMounted,
+            width: w > 0 ? w : undefined,
+            height: h > 0 ? h : undefined,
+          });
+        }
+      }
+    });
+    return map;
+  };
+
+  let pageMap = extractItems();
+
+  // If some slots are unmounted and container exists, perform bounded scroll
+  if (container && pageMap.size < targetCount) {
+    const originalScrollTop = container.scrollTop;
+    const scrollStep = Math.max(600, Math.floor(container.clientHeight * 0.75));
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (pageMap.size >= targetCount) break;
+
+      container.scrollTop += scrollStep;
+      try {
+        container.dispatchEvent(new Event("scroll", { bubbles: true }));
+      } catch {}
+
+      await new Promise((r) => setTimeout(r, delayMs));
+
+      const updated = extractItems();
+      for (const [pNum, info] of updated.entries()) {
+        if (!pageMap.has(pNum) || !pageMap.get(pNum)?.src) {
+          pageMap.set(pNum, info);
+        }
+      }
+
+      if (container.scrollTop + container.clientHeight >= container.scrollHeight - 20) {
+        break;
+      }
+    }
+
+    // Restore scroll position
+    container.scrollTop = originalScrollTop;
+  }
+
+  if (pageMap.size === 0) {
+    return null;
+  }
+
+  // Convert to ordered ChapterPageItem array 1..N
+  const sortedPageNums = Array.from(pageMap.keys()).sort((a, b) => a - b);
+  const items: ChapterPageItem[] = sortedPageNums.map((pNum) => {
+    const info = pageMap.get(pNum)!;
+    const isUsable =
+      info.isMounted && ((info.width ?? 0) > 0 || (info.height ?? 0) > 0 || !!info.src);
+    return {
+      pageNumber: pNum,
+      pageIndex: pNum - 1,
+      src: info.src,
+      srcKey: Registry.srcKeyOf(info.src),
+      element: info.el,
+      isMounted: info.isMounted,
+      isUsableAsset: isUsable,
+      width: info.width,
+      height: info.height,
+    };
+  });
+
+  return items;
+}
+
+/**
  * Acquires a chapter page's binary asset independently of DOM mounting or virtualization,
  * verifies its dimensions and SHA-256 hash, and durably persists it in IndexedDB.
  */
@@ -245,9 +436,10 @@ export async function acquirePageAsset(
   width?: number;
   height?: number;
   hash?: string;
+  fetchStatus?: number | string;
   error?: string;
 }> {
-  // Check if already persisted with valid image data
+  // 1. Check if already persisted with valid image data in IndexedDB
   try {
     const existing = await getPageRecord(chapterKey, page.pageIndex);
     if (existing?.originalDataUrl || existing?.renderedDataUrl) {
@@ -263,31 +455,102 @@ export async function acquirePageAsset(
         width: existing.width,
         height: existing.height,
         hash: existing.hash,
+        fetchStatus: "cached",
       };
     }
   } catch {}
 
-  // Fetch via background proxy
+  // 2. Fast-path: Direct Canvas extraction if image is already mounted and complete
+  if (
+    typeof document !== "undefined" &&
+    page.element instanceof HTMLImageElement &&
+    page.element.complete &&
+    page.element.naturalWidth > 0 &&
+    page.element.naturalHeight > 0
+  ) {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = page.element.naturalWidth;
+      canvas.height = page.element.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(page.element, 0, 0);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
+        if (dataUrl && dataUrl.startsWith("data:image/jpeg;base64,")) {
+          const bytes = dataUrlToUint8Array(dataUrl);
+          const hashBuffer = await crypto.subtle.digest("SHA-256", bytes as any);
+          const hashArray = Array.from(new Uint8Array(hashBuffer));
+          const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+
+          await savePageRecord({
+            id: generatePageKey(chapterKey, page.pageIndex),
+            chapterKey,
+            pageIndex: page.pageIndex,
+            pageNumber: page.pageNumber,
+            src: page.src,
+            mimeType: "image/jpeg",
+            originalDataUrl: dataUrl,
+            width: canvas.width,
+            height: canvas.height,
+            hash: hashHex,
+            byteLength: bytes.length,
+            translations: [],
+            verified: false,
+            status: "acquired",
+            updatedAt: Date.now(),
+          });
+
+          page.isAcquired = true;
+          page.isUsableAsset = true;
+          page.width = canvas.width;
+          page.height = canvas.height;
+          page.byteLength = bytes.length;
+          page.hash = hashHex;
+
+          return {
+            success: true,
+            byteLength: bytes.length,
+            width: canvas.width,
+            height: canvas.height,
+            hash: hashHex,
+            fetchStatus: "dom_canvas",
+          };
+        }
+      }
+    } catch {
+      // Canvas tainted (CORS) or drawing error; continue to background fetch
+    }
+  }
+
+  // 3. Fetch via background proxy
   try {
     if (typeof browser === "undefined" || !browser.runtime?.sendMessage) {
       return { success: false, error: "Browser runtime messaging unavailable" };
     }
 
-    const ref =
-      referer ||
-      (typeof window !== "undefined" ? window.location.href : "https://comix.to/");
+    const isComix =
+      (typeof window !== "undefined" &&
+        (window.location.hostname.includes("comix.to") ||
+          window.location.hostname.includes("comix.ws"))) ||
+      page.src.includes(".rxn.") ||
+      page.src.includes("comix.to") ||
+      page.src.includes("comix.ws");
+
+    const ref = referer || (typeof window !== "undefined" ? window.location.href : "https://comix.to/");
     const res = await browser.runtime.sendMessage({
       type: "FETCH_CHAPTER_PAGE_IMAGE",
       data: {
         url: page.src,
-        referer: ref,
+        referer: isComix ? "" : ref,
+        noReferer: isComix,
       },
     });
 
     if (!res?.success || !res?.dataUrl) {
       return {
         success: false,
-        error: res?.error || "Background page image fetch failed",
+        fetchStatus: res?.httpStatus || 400,
+        error: res?.error || `Background fetch failed (status: ${res?.httpStatus ?? "unknown"})`,
       };
     }
 
@@ -322,6 +585,7 @@ export async function acquirePageAsset(
       width: res.width,
       height: res.height,
       hash: res.hash,
+      fetchStatus: res.httpStatus || 200,
     };
   } catch (err: any) {
     return {
@@ -524,12 +788,23 @@ export function extractExpectedPageCount(
   if (initialDataEl?.textContent) {
     try {
       const data = JSON.parse(initialDataEl.textContent);
+      if (data.read && typeof data.read === "object") {
+        if (typeof data.read.totalPages === "number" && data.read.totalPages > 0) return data.read.totalPages;
+        if (typeof data.read.total_pages === "number" && data.read.total_pages > 0) return data.read.total_pages;
+        if (typeof data.read.pageCount === "number" && data.read.pageCount > 0) return data.read.pageCount;
+      }
       if (Array.isArray(data.pages) && data.pages.length > 0) return data.pages.length;
       if (Array.isArray(data.images) && data.images.length > 0) return data.images.length;
       if (typeof data.totalPages === "number" && data.totalPages > 0) return data.totalPages;
       if (typeof data.total_pages === "number" && data.total_pages > 0) return data.total_pages;
       if (typeof data.pageCount === "number" && data.pageCount > 0) return data.pageCount;
     } catch {}
+  }
+
+  // 1c. Comix.to / modern reader page slot containers
+  const comixSlots = doc.querySelectorAll(".rpage-page[data-page], .rpage-page");
+  if (comixSlots.length > 1) {
+    return comixSlots.length;
   }
 
   // 2. Active rule custom selector/regex
@@ -695,7 +970,11 @@ export async function discoverChapterImagesProgressive(
   expectedCount: number;
   discoveredCount: number;
   usableAssetCount: number;
+  strategy?: "native_preload" | "slot_discovery" | "bridge_intercept" | "dom_scroll";
 }> {
+  // Ensure native preload settings are applied if running on Comix.to / Comix.ws
+  applyComixNativePreload();
+
   const doc = typeof document !== "undefined" ? document : undefined;
   const capturedBridgePages = doc ? getCapturedPagesFromBridge(doc) : [];
 
@@ -768,7 +1047,32 @@ export async function discoverChapterImagesProgressive(
       expectedCount: expectedCount > 0 ? expectedCount : pages.length,
       discoveredCount: pages.length,
       usableAssetCount,
+      strategy: "bridge_intercept",
     };
+  }
+
+  // Case B: Slot-based discovery for Comix (.rpage-page slots)
+  if (doc) {
+    const slotPages = await discoverSlotBasedPages(doc, activeRule, {
+      expectedCount,
+      maxScrollAttempts: options?.maxScrollAttempts,
+      scrollDelayMs: options?.scrollDelayMs,
+    });
+    if (slotPages && slotPages.length > 0 && (expectedCount <= 0 || slotPages.length >= expectedCount)) {
+      const usableAssetCount = slotPages.filter((p) => p.isUsableAsset).length;
+      const finalImages = slotPages
+        .map((p) => p.element)
+        .filter((el): el is MangaTargetElement => !!el);
+
+      return {
+        images: finalImages,
+        pages: slotPages,
+        expectedCount: expectedCount > 0 ? expectedCount : slotPages.length,
+        discoveredCount: slotPages.length,
+        usableAssetCount,
+        strategy: "slot_discovery",
+      };
+    }
   }
 
   // Accumulate pages across all scroll steps to prevent virtualized unmount loss
@@ -943,6 +1247,7 @@ export async function discoverChapterImagesProgressive(
     expectedCount,
     discoveredCount: pages.length,
     usableAssetCount,
+    strategy: "dom_scroll",
   };
 }
 
@@ -1698,8 +2003,8 @@ export class ChapterPreparationManager {
       }
     }
 
-    let verdict: CollectorVerdict = "READY_FOR_OWNER_BROWSER_ACCEPTANCE";
-    let message = `All ${expectedCount} expected pages discovered, acquired, and persisted in correct order without DOM dependency.`;
+    let verdict: CollectorVerdict = "READY_FOR_OWNER_RETEST";
+    let message = `All ${expectedCount} expected pages discovered, acquired, and persisted in correct order without DOM dependency (${discovery.strategy || "slot_discovery"}).`;
 
     if (expectedCount <= 0) {
       verdict = "UNKNOWN_EXPECTED_COUNT";
@@ -1707,9 +2012,9 @@ export class ChapterPreparationManager {
     } else if (discoveredCount < expectedCount) {
       verdict = "INCOMPLETE_DISCOVERY";
       message = `Incomplete discovery: found ${discoveredCount} of ${expectedCount} pages (missing pages: ${missingPageNumbers.join(", ")}).`;
-    } else if (acquiredCount < expectedCount && mountedCount < expectedCount) {
-      verdict = "DETACHED_ASSETS";
-      message = `${discoveredCount - mountedCount} of ${discoveredCount} pages are currently detached from DOM and not yet acquired.`;
+    } else if (acquiredCount < expectedCount && persistedCount < expectedCount) {
+      verdict = "PARTIAL_WITH_VERIFIED_BLOCKERS";
+      message = `${discoveredCount - Math.max(acquiredCount, persistedCount)} of ${discoveredCount} pages could not be acquired or persisted.`;
     }
 
     const identity = extractChapterIdentity(document);
@@ -1719,6 +2024,7 @@ export class ChapterPreparationManager {
       chapterInternalId: identity.chapterInternalId,
       chapterTitle: this.chapterTitle,
       url: typeof window !== "undefined" ? window.location.href : "",
+      strategy: discovery.strategy || "slot_discovery",
       expectedCount,
       discoveredCount,
       mountedCount,
@@ -1768,7 +2074,16 @@ export class ChapterPreparationManager {
 
   exportDiagnosticJson(diag?: ChapterDiagnosticResult): string {
     const data = diag || this.getProgress();
-    return JSON.stringify(data, null, 2);
+    return JSON.stringify(
+      data,
+      (key, value) => {
+        if (typeof value === "string" && value.startsWith("data:image/") && value.length > 200) {
+          return `[data-url: ${value.length} chars]`;
+        }
+        return value;
+      },
+      2,
+    );
   }
 
   getProgress(): ChapterPrepProgress {

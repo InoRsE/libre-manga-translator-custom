@@ -552,12 +552,13 @@ export default defineBackground(() => {
       return true;
     }
 
-    // M1.4.3: Decoupled Chapter Page Asset Fetch & Integrity Verification
+    // M1.4.3 & M1.4.5: Decoupled Chapter Page Asset Fetch & Integrity Verification
     // Fetches manga page images directly from the background worker bypassing CORS
-    // and reader DOM virtualization, validates binary signatures, decodes dimensions,
-    // computes SHA-256 integrity hash, and returns a verified data URL.
+    // and reader DOM virtualization.
+    // Reference B / Comix CDN Fix: Comix.to image CDNs strictly reject requests that carry a Referer
+    // header (HTTP 403 Forbidden). For Comix or explicit no-referrer requests, Referer is omitted/stripped.
     if (msg.type === "FETCH_CHAPTER_PAGE_IMAGE") {
-      const { url, referer } = msg.data ?? {};
+      const { url, referer, noReferer } = msg.data ?? {};
       const task = async () => {
         if (!url || typeof url !== "string") {
           return { success: false, error: "Invalid or empty image URL" };
@@ -566,55 +567,99 @@ export default defineBackground(() => {
           return { success: false, error: "Security rejection: Disallowed or unsafe image URL" };
         }
 
+        const isComixDomain =
+          noReferer === true ||
+          (referer && (referer.includes("comix.to") || referer.includes("comix.ws"))) ||
+          url.includes("comix.to") ||
+          url.includes("comix.ws");
+
         const ruleId = 100000 + Math.floor(Math.random() * 800000);
         const dnr = (browser as any).declarativeNetRequest;
-        if (dnr?.updateSessionRules && referer) {
+        let dnrApplied = false;
+
+        if (dnr?.updateSessionRules) {
           try {
-            await dnr.updateSessionRules({
-              removeRuleIds: [ruleId],
-              addRules: [
-                {
-                  id: ruleId,
-                  priority: 1,
-                  action: {
-                    type: "modifyHeaders",
-                    requestHeaders: [
-                      {
-                        header: "Referer",
-                        operation: "set",
-                        value: referer,
-                      },
-                    ],
+            if (isComixDomain) {
+              // Strip Referer for Comix CDNs (Reference B: Comix image CDNs return 403 when Referer is sent)
+              await dnr.updateSessionRules({
+                removeRuleIds: [ruleId],
+                addRules: [
+                  {
+                    id: ruleId,
+                    priority: 1,
+                    action: {
+                      type: "modifyHeaders",
+                      requestHeaders: [
+                        {
+                          header: "Referer",
+                          operation: "remove",
+                        },
+                      ],
+                    },
+                    condition: {
+                      urlFilter: url.replace(/[?#].*$/, ""),
+                      resourceTypes: ["xmlhttprequest", "other", "image"],
+                    },
                   },
-                  condition: {
-                    urlFilter: url.replace(/[?#].*$/, ""),
-                    resourceTypes: ["xmlhttprequest", "other", "image"],
+                ],
+              });
+              dnrApplied = true;
+            } else if (referer) {
+              // For other sites requiring hotlink referer
+              await dnr.updateSessionRules({
+                removeRuleIds: [ruleId],
+                addRules: [
+                  {
+                    id: ruleId,
+                    priority: 1,
+                    action: {
+                      type: "modifyHeaders",
+                      requestHeaders: [
+                        {
+                          header: "Referer",
+                          operation: "set",
+                          value: referer,
+                        },
+                      ],
+                    },
+                    condition: {
+                      urlFilter: url.replace(/[?#].*$/, ""),
+                      resourceTypes: ["xmlhttprequest", "other", "image"],
+                    },
                   },
-                },
-              ],
-            });
+                ],
+              });
+              dnrApplied = true;
+            }
           } catch (e) {
-            console.warn("LMT: Failed to set DNR rule for page asset fetch:", e);
+            console.warn("LMT: Failed to update DNR rule for page asset fetch:", e);
           }
         }
 
         try {
-          const res = await fetch(url, {
+          const fetchOptions: RequestInit = {
             method: "GET",
             headers: {
               Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
             },
             credentials: "omit",
-          });
+            referrerPolicy: isComixDomain ? "no-referrer" : undefined,
+          };
+          if (isComixDomain) {
+            fetchOptions.referrer = "";
+          }
+
+          const res = await fetch(url, fetchOptions);
           if (!res.ok) {
             return {
               success: false,
+              httpStatus: res.status,
               error: `HTTP fetch failed with status ${res.status}: ${res.statusText}`,
             };
           }
           const buf = await res.arrayBuffer();
           if (buf.byteLength === 0) {
-            return { success: false, error: "Empty buffer received for page image" };
+            return { success: false, httpStatus: res.status, error: "Empty buffer received for page image" };
           }
           const bytes = new Uint8Array(buf);
           const mime = sniffMime(bytes);
@@ -630,6 +675,7 @@ export default defineBackground(() => {
           if (!isValidImage) {
             return {
               success: false,
+              httpStatus: res.status,
               error: "Downloaded asset is not a valid image format (unrecognized magic bytes)",
             };
           }
@@ -664,9 +710,10 @@ export default defineBackground(() => {
             width,
             height,
             hash,
+            httpStatus: res.status,
           };
         } finally {
-          if (dnr?.updateSessionRules && referer) {
+          if (dnrApplied) {
             await dnr
               .updateSessionRules({
                 removeRuleIds: [ruleId],

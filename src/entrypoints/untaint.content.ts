@@ -60,27 +60,9 @@ export default defineContentScript({
     // decrypted chapter manifests the moment they arrive, without requiring DOM
     // elements to be mounted on screen or user scrolling.
     try {
-      const isComix =
-        typeof window !== "undefined" &&
-        (window.location.hostname.includes("comix.to") ||
-          window.location.hostname.includes("comix.ws"));
-
-      if (isComix) {
-        // Prevent background tab throttling by keeping visibility visible
-        try {
-          Object.defineProperty(document, "hidden", {
-            configurable: true,
-            get: () => false,
-          });
-          Object.defineProperty(document, "visibilityState", {
-            configurable: true,
-            get: () => "visible",
-          });
-        } catch {}
-      }
-
       let capturedPages: Array<{
         src: string;
+        url?: string;
         pageNumber: number;
         pageIndex: number;
         width?: number;
@@ -90,21 +72,26 @@ export default defineContentScript({
       const publishCapturedPages = (
         pages: Array<{
           src: string;
+          url?: string;
           pageNumber: number;
           pageIndex: number;
           width?: number;
           height?: number;
         }>,
       ) => {
-        capturedPages = pages;
+        const normalized = pages.map((p) => ({
+          ...p,
+          url: p.url || p.src,
+        }));
+        capturedPages = normalized;
         try {
-          (window as any).__lmt_captured_pages = pages;
+          (window as any).__lmt_captured_pages = normalized;
           document.documentElement?.setAttribute(
             "data-lmt-captured-pages",
-            JSON.stringify(pages),
+            JSON.stringify(normalized),
           );
           window.dispatchEvent(
-            new CustomEvent("lmt:pages-captured", { detail: { pages } }),
+            new CustomEvent("lmt:pages-captured", { detail: { pages: normalized } }),
           );
         } catch {}
       };

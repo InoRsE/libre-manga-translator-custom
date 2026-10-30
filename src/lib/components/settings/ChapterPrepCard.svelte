@@ -22,7 +22,17 @@
   async function copyDiagnosticJson() {
     if (!diagnostic) return;
     try {
-      await navigator.clipboard.writeText(JSON.stringify(diagnostic, null, 2));
+      const sanitized = JSON.stringify(
+        diagnostic,
+        (key, value) => {
+          if (typeof value === "string" && value.startsWith("data:image/") && value.length > 200) {
+            return `[data-url: ${value.length} chars]`;
+          }
+          return value;
+        },
+        2,
+      );
+      await navigator.clipboard.writeText(sanitized);
       copiedJson = true;
       setTimeout(() => (copiedJson = false), 2000);
     } catch (err) {
@@ -259,7 +269,7 @@
         <div class="flex items-center justify-between font-mono">
           <span class="text-[var(--text-dim)]">Verdict:</span>
           <span
-            class="font-semibold px-1.5 py-0.5 rounded text-[9px] {diagnostic.verdict === 'COLLECTOR_LIVE_VERIFIED' || diagnostic.verdict === 'READY_FOR_OWNER_BROWSER_ACCEPTANCE' || diagnostic.verdict === 'ELIGIBLE_FOR_PROCESSING'
+            class="font-semibold px-1.5 py-0.5 rounded text-[9px] {diagnostic.verdict === 'COLLECTOR_LIVE_VERIFIED' || diagnostic.verdict === 'READY_FOR_OWNER_RETEST' || diagnostic.verdict === 'READY_FOR_OWNER_BROWSER_ACCEPTANCE' || diagnostic.verdict === 'ELIGIBLE_FOR_PROCESSING'
               ? 'bg-emerald-500/20 text-emerald-400'
               : diagnostic.verdict === 'DETACHED_ASSETS'
                 ? 'bg-amber-500/20 text-amber-400'
@@ -268,6 +278,12 @@
             {diagnostic.verdict}
           </span>
         </div>
+        {#if diagnostic.strategy}
+          <div class="flex items-center justify-between font-mono text-[9px]">
+            <span class="text-[var(--text-dim)]">Strategy:</span>
+            <span class="text-[var(--accent-cyan)] font-semibold">{diagnostic.strategy}</span>
+          </div>
+        {/if}
         <div class="text-[var(--text-dim)] leading-tight">{diagnostic.message}</div>
         <div class="grid grid-cols-5 gap-1 pt-1 border-t border-[var(--border-faint)] text-center font-mono text-[9px]">
           <div>
