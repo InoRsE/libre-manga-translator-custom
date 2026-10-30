@@ -1,8 +1,8 @@
 /**
- * Trial #1: Zipang Chapter 54 Full-Chapter Calibration & Capacity Probe (M1.5)
+ * Trial #1: Zipang Chapter 54 Full-Chapter Calibration & Capacity Probe (M1.5 / M1.5.1)
  *
- * Executes exactly ONE live inference HTTP POST request via BenchmarkTransportGateway.
- * Strictly enforces 0 retries, durable pre-dispatch reservation, and ledger logging.
+ * Reusable benchmark runner executing exactly ONE live inference HTTP POST request
+ * via BenchmarkTransportGateway with cross-process single-writer locking and durable ledger.
  *
  * Target: All 22 distinct real manga pages of Zipang Chapter 54.
  * Model: gemini-3.8-flash
@@ -15,15 +15,14 @@ import fs from "fs";
 import path from "path";
 import { BenchmarkTransportGateway } from "../src/lib/gemini/benchmark-gateway";
 import { getBenchmarkApiKey } from "./get-api-key";
-import { extractAllZipang54Pages } from "C:/Users/champ/.gemini/antigravity/brain/74e28695-8273-4cf0-ac12-5fb4547b7953/scratch/extract_cached_corpus";
+import { getZipangCorpusPages, type ExtractedCorpusPage } from "./corpus-adapter";
 
 const EXPERIMENT_ID = "M1.5-EMPIRICAL-CAPACITY-BENCHMARK";
 const TRIAL_ID = "trial-1-zipang54-full-chapter";
 
-async function runTrial1() {
-  const apiKey = getBenchmarkApiKey();
+export async function runTrial1(options?: { dryRun?: boolean }) {
   console.log("=================================================================");
-  console.log(" MANGA-THAI — Mission M1.5: Empirical Capacity Benchmark");
+  console.log(" MANGA-THAI — Mission M1.5.1: Empirical Capacity Benchmark");
   console.log(" TRIAL #1: Zipang Chapter 54 Full-Chapter Vision Probe (22 Pages)");
   console.log("=================================================================\n");
 
@@ -39,39 +38,30 @@ async function runTrial1() {
     process.exit(1);
   }
 
-  // Extract all 22 pages
-  const pages = extractAllZipang54Pages();
+  // Extract all 22 pages portably
+  const pages = getZipangCorpusPages();
   console.log(`Loaded ${pages.length} distinct real manga pages from Zipang Ch. 54.`);
-
-  const blobDir = path.join(
-    process.env.LOCALAPPDATA || "",
-    "Google/Chrome/User Data/Default/IndexedDB/https_comix.to_0.indexeddb.blob/1/00"
-  );
 
   const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
   const expectedPages: Array<{ pageId: string; expectedCount: number }> = [];
 
   let totalImageBytes = 0;
   for (const p of pages) {
-    const raw = fs.readFileSync(path.join(blobDir, p.file));
-    const dataUrlIdx = raw.indexOf(Buffer.from("data:image"));
-    let endIdx = raw.indexOf(Buffer.from('"'), dataUrlIdx);
-    if (endIdx === -1) endIdx = raw.length;
-    const base64 = raw.toString("utf8", dataUrlIdx, endIdx).replace(/^data:image\/[a-z]+;base64,/, "");
-    totalImageBytes += Math.round((base64.length * 3) / 4);
+    if (!p.base64Data) continue;
+    totalImageBytes += p.jpegBytesLength;
 
     parts.push({ text: `Page ${p.pageNumber} (ID: "${p.id}"):` });
     parts.push({
       inlineData: {
-        mimeType: "image/jpeg",
-        data: base64,
+        mimeType: p.mimeType,
+        data: p.base64Data,
       },
     });
 
-    // We expect the model to return a page record for every submitted page
+    // Production Dialogue Contract: Each page registers its expected dialogue region count
     expectedPages.push({
       pageId: p.id,
-      expectedCount: -1, // dynamic dialogue count: accept all valid dialogue regions on the page
+      expectedCount: -1, // dynamic dialogue contract when raw scans are submitted
     });
   }
 
@@ -82,6 +72,13 @@ async function runTrial1() {
   console.log(`- Destination model: gemini-3.8-flash`);
   console.log(`- Thinking configuration: medium`);
   console.log(`- Max output tokens: 65,536\n`);
+
+  if (options?.dryRun) {
+    console.log("[DRY-RUN]: Preflight validation successful. Zero inference requests dispatched.");
+    return;
+  }
+
+  const apiKey = getBenchmarkApiKey();
 
   const systemPrompt = `You are a professional manga translator working on the naval/historical series "Zipang".
 You are provided with 22 sequential manga pages from Chapter 54 in document reading order: ${pages.map((p) => `Page ${p.pageNumber} (ID: "${p.id}")`).join(", ")}.
@@ -161,37 +158,18 @@ Output strictly the JSON structure without markdown code blocks.`;
     }
   }
 
-  // Save the full raw response for verifiable audit
   const auditPath = path.resolve(process.cwd(), "trial-1-raw-response.json");
   if (result.rawText) {
     fs.writeFileSync(auditPath, result.rawText, "utf8");
     console.log(`Raw model response saved to: ${auditPath}`);
   }
 
-  // Analyze recovered pages
   if (result.recovered) {
     console.log("\n=== RECOVERY AND VERIFICATION RESULTS ===");
     console.log(`- Completed valid pages: ${result.recovered.completedPages.length} / ${pages.length}`);
     console.log(`- Unfinished pages:      ${result.recovered.unfinishedPageIds.length}`);
     console.log(`- Fully complete:        ${result.recovered.isFullyComplete}`);
     console.log(`- Truncated:             ${result.recovered.isTruncated}`);
-
-    let totalDialogueRegions = 0;
-    for (const cp of result.recovered.completedPages) {
-      totalDialogueRegions += cp.translations.length;
-    }
-    console.log(`- Total dialogue regions translated: ${totalDialogueRegions}`);
-    console.log(`- Average dialogue regions/page:     ${(totalDialogueRegions / result.recovered.completedPages.length).toFixed(1)}`);
-
-    console.log("\n--- Sample Translations from Trial #1 ---");
-    for (const cp of result.recovered.completedPages.slice(0, 3)) {
-      console.log(`\nPage [${cp.pageId}]:`);
-      for (let i = 0; i < Math.min(cp.translations.length, 3); i++) {
-        console.log(`  Box ${i + 1}:`);
-        console.log(`    Source:      "${cp.sourceTexts?.[i] || ""}"`);
-        console.log(`    Translation: "${cp.translations[i]}"`);
-      }
-    }
   }
 
   const finalState = gateway.getLedgerState();
@@ -200,5 +178,8 @@ Output strictly the JSON structure without markdown code blocks.`;
   console.log(`- Mission attempts remaining: ${finalState.missionBudgetLimit - finalState.missionAttemptsConsumed}`);
 }
 
-runTrial1().catch(console.error);
-
+if (import.meta.main) {
+  // STRICT M1.5.1 RULE: Default invocation is dry-run only; no live generateContent call
+  const isLiveAuthorized = process.argv.includes("--authorized-live");
+  runTrial1({ dryRun: !isLiveAuthorized }).catch(console.error);
+}

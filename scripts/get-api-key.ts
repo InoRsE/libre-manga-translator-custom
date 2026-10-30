@@ -1,37 +1,29 @@
-import fs from "fs";
-import path from "path";
-
 /**
- * Dynamically resolves the Gemini API key from environment variable
- * or local extension storage without hardcoding secrets in repository source files.
+ * Secure Benchmark API Key Loader (M1.5.1 Section F)
+ *
+ * Resolves credentials strictly from explicit environment variables:
+ * - process.env.GEMINI_API_KEY
+ * - process.env.GOOGLE_API_KEY
+ *
+ * Never inspects raw browser storage or persistent database files.
+ * Throws a helpful configuration error if no credential is provided in the environment.
  */
 export function getBenchmarkApiKey(): string {
-  if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0) {
-    return process.env.GEMINI_API_KEY.trim();
-  }
-  if (process.env.GOOGLE_API_KEY && process.env.GOOGLE_API_KEY.trim().length > 0) {
-    return process.env.GOOGLE_API_KEY.trim();
-  }
-
-  // Fall back to inspect local unpacked extension LevelDB storage
-  const storageDir = path.join(
-    process.env.LOCALAPPDATA || "",
-    "Google/Chrome/User Data/Default/Local Extension Settings/flcbljdelikjplgoilhmdhjilcfgkpke"
-  );
-
-  if (fs.existsSync(storageDir)) {
-    const files = ["000005.ldb", "000004.log"];
-    for (const f of files) {
-      const p = path.join(storageDir, f);
-      if (fs.existsSync(p)) {
-        const b = fs.readFileSync(p);
-        const match = b.toString("utf8").match(/AQ\.[a-zA-Z0-9_\-]{40,60}|AIzaSy[a-zA-Z0-9_\-]{33}/);
-        if (match) {
-          return match[0];
-        }
-      }
+  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (key && key.trim().length > 0) {
+    const trimmed = key.trim();
+    if (/[^\x21-\x7e]/.test(trimmed)) {
+      throw new Error(
+        "GEMINI_API_KEY contains invalid non-ASCII characters. Re-export your API key cleanly.",
+      );
     }
+    return trimmed;
   }
 
-  throw new Error("No Gemini API key found in environment or local extension storage.");
+  throw new Error(
+    "Missing Gemini API key for benchmark execution.\n" +
+      "Please set the GEMINI_API_KEY environment variable in your local terminal session:\n" +
+      "  PowerShell: $env:GEMINI_API_KEY = 'your_api_key_here'\n" +
+      "  Bash:       export GEMINI_API_KEY='your_api_key_here'",
+  );
 }

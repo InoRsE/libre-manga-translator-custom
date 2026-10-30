@@ -12,27 +12,27 @@ import {
 import type { ExpectedBatchPage } from "../../src/lib/server/validator";
 
 const TEST_LEDGER_PATH = path.resolve(process.cwd(), "test-benchmark-ledger.json");
+const TEST_LOCK_PATH = `${TEST_LEDGER_PATH}.lock`;
 
-describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
+describe("Hard Safety Gate & Resilient Recovery (M1.5.1)", () => {
   let gateway: BenchmarkTransportGateway;
 
   beforeEach(() => {
-    if (fs.existsSync(TEST_LEDGER_PATH)) {
-      fs.unlinkSync(TEST_LEDGER_PATH);
-    }
+    // Clean only the dedicated test ledger files, NEVER real benchmark-ledger.json!
+    if (fs.existsSync(TEST_LEDGER_PATH)) fs.unlinkSync(TEST_LEDGER_PATH);
+    if (fs.existsSync(TEST_LOCK_PATH)) fs.unlinkSync(TEST_LOCK_PATH);
     gateway = new BenchmarkTransportGateway(TEST_LEDGER_PATH);
   });
 
   afterEach(() => {
-    if (fs.existsSync(TEST_LEDGER_PATH)) {
-      fs.unlinkSync(TEST_LEDGER_PATH);
-    }
+    if (fs.existsSync(TEST_LEDGER_PATH)) fs.unlinkSync(TEST_LEDGER_PATH);
+    if (fs.existsSync(TEST_LOCK_PATH)) fs.unlinkSync(TEST_LOCK_PATH);
   });
 
   // ==========================================================================
-  // SECTION 5: HARD SAFETY GATE TESTS
+  // SECTION 5 & E: HARD SAFETY GATE & CROSS-PROCESS LOCKING
   // ==========================================================================
-  describe("Section 5: Hard Safety Gate & Request Ledger Integrity", () => {
+  describe("Section E: Cross-Process Exclusive Reservation & Fail-Closed Integrity", () => {
     const dummyExpectedPages: ExpectedBatchPage[] = [
       { pageId: "page_1", expectedCount: 2 },
     ];
@@ -65,7 +65,6 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
       expect(res.entry.missionBudgetUsed).toBe(1);
       expect(res.entry.missionBudgetRemaining).toBe(2);
 
-      // Verify ledger persisted to disk
       const state = gateway.getLedgerState();
       expect(state.missionAttemptsConsumed).toBe(1);
       expect(state.entries.length).toBe(1);
@@ -76,7 +75,6 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
       let postCount = 0;
       const customFetch = mock(async (_url: string, opts: any) => {
         postCount++;
-        // Simulate hanging request that triggers abort
         return new Promise<Response>((_, reject) => {
           opts.signal.addEventListener("abort", () => {
             const err = new Error("The operation was aborted");
@@ -94,11 +92,11 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
         userPrompt: "usr",
         parts: [],
         expectedPages: dummyExpectedPages,
-        timeoutMs: 50, // 50ms fast timeout
+        timeoutMs: 50,
         customFetch,
       });
 
-      expect(postCount).toBe(1); // STRICTLY 1 POST
+      expect(postCount).toBe(1);
       expect(res.success).toBe(false);
       expect(res.entry.dispatchStatus).toBe("TIMEOUT");
 
@@ -254,15 +252,16 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
       expect(postCount).toBe(3); // ZERO NEW POSTS CONSUMED
     });
 
-    it("Concurrency Lock -> Blocks concurrent requests", async () => {
+    it("Cross-process lock -> Blocks independent gateway instances from concurrent dispatch", async () => {
       const slowFetch = mock(async () => {
-        await new Promise((r) => setTimeout(r, 100));
+        await new Promise((r) => setTimeout(r, 120));
         return new Response(JSON.stringify({}), { status: 200 });
       }) as any;
 
+      // Instance A starts dispatch
       const p1 = gateway.executeBenchmarkInference({
         experimentId: "exp-lock",
-        trialId: "trial-lock-1",
+        trialId: "trial-lock-instA",
         apiKey: "test-key",
         systemPrompt: "sys",
         userPrompt: "usr",
@@ -271,11 +270,14 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
         customFetch: slowFetch,
       });
 
-      // Simultaneous call must reject immediately
+      // Instance B created independently pointing to the same ledger & lockfile
+      const gatewayInstanceB = new BenchmarkTransportGateway(TEST_LEDGER_PATH);
+
+      // Instance B must reject immediately with cross-process lock collision!
       expect(
-        gateway.executeBenchmarkInference({
+        gatewayInstanceB.executeBenchmarkInference({
           experimentId: "exp-lock",
-          trialId: "trial-lock-2",
+          trialId: "trial-lock-instB",
           apiKey: "test-key",
           systemPrompt: "sys",
           userPrompt: "usr",
@@ -283,24 +285,51 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
           expectedPages: dummyExpectedPages,
           customFetch: slowFetch,
         }),
-      ).rejects.toThrow(/Benchmark concurrency violation/i);
+      ).rejects.toThrow(/cross-process/i);
 
       await p1;
+    });
+
+    it("Fail-closed handling of corrupted ledger -> Throws fatal error, never resets budget", () => {
+      // Intentionally corrupt the ledger file on disk
+      fs.writeFileSync(TEST_LEDGER_PATH, "{ missionAttemptsConsumed: 2, corrupt json ...", "utf8");
+
+      expect(() => gateway.getLedgerState()).toThrow(/FAIL-CLOSED INTEGRITY ERROR/i);
+
+      // Attempting to dispatch must also fail-closed immediately without sending a request
+      expect(
+        gateway.executeBenchmarkInference({
+          experimentId: "exp-corrupt",
+          trialId: "trial-corrupt-1",
+          apiKey: "test-key",
+          systemPrompt: "sys",
+          userPrompt: "usr",
+          parts: [],
+          expectedPages: dummyExpectedPages,
+        }),
+      ).rejects.toThrow(/FAIL-CLOSED INTEGRITY ERROR/i);
+    });
+
+    it("Refuses to reset production ledger in resetLedgerForTesting", () => {
+      const prodGateway = new BenchmarkTransportGateway("benchmark-ledger.json");
+      expect(() => prodGateway.resetLedgerForTesting()).toThrow(
+        /SAFETY REJECTION: Refusing to reset production ledger/i,
+      );
     });
   });
 
   // ==========================================================================
-  // SECTION 6: RESILIENT PARTIAL RECOVERY TESTS
+  // SECTION 6 & D: RESILIENT PARTIAL RECOVERY LIMITS
   // ==========================================================================
-  describe("Section 6: Resilient Partial-Result Page Recovery", () => {
+  describe("Section D: Resilient Partial-Result Page Recovery Limits", () => {
     const expectedPages: ExpectedBatchPage[] = [
       { pageId: "p1", expectedCount: 2 },
       { pageId: "p2", expectedCount: 2 },
       { pageId: "p3", expectedCount: 2 },
     ];
 
-    it("extracts completed pages from truncated JSON cut off mid-stream", () => {
-      // Stream cuts off while generating p3!
+    it("Output token truncation (MAX_TOKENS) -> Extracts complete pages, discards trailing truncated record", () => {
+      // Model stream was cut off while generating p3
       const truncatedJson = `
       {
         "pages": [
@@ -338,7 +367,7 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
       expect(recovery.totalExpected).toBe(3);
     });
 
-    it("strictly discards pages with incomplete dialogue coverage (truthful completeness)", () => {
+    it("Truthful completeness check -> Strictly discards pages where detected dialogue has empty translation", () => {
       const partialDialogueJson = `
       {
         "pages": [
@@ -350,7 +379,7 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
           {
             "pageId": "p2",
             "translations": ["แปล 1", ""],
-            "sourceTexts": ["Text 1", "Text 2 (Dialogue exists but translation dropped!)"]
+            "sourceTexts": ["Text 1", "Text 2 (Dialogue exists but translation was dropped!)"]
           }
         ]
       }`;
@@ -365,7 +394,24 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
       expect(recovery.unfinishedPageIds).toContain("p2");
     });
 
-    it("strictly discards duplicate page records", () => {
+    it("Missing or invalid sourceTexts array -> Discards incomplete record", () => {
+      const missingSourceTextsJson = `
+      {
+        "pages": [
+          {
+            "pageId": "p1",
+            "translations": ["แปล 1", "แปล 2"],
+            "sourceTexts": ["Text 1"]
+          }
+        ]
+      }`;
+
+      const recovery = recoverValidatedBatchPages(missingSourceTextsJson, expectedPages.slice(0, 1));
+      // Length of sourceTexts (1) does not match expectedCount (2)
+      expect(recovery.completedPages[0].sourceTexts).toBeUndefined();
+    });
+
+    it("Conflicting / Duplicate page records -> Discards duplicate", () => {
       const duplicateJson = `
       {
         "pages": [
@@ -379,7 +425,7 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
       expect(recovery.completedPages[0].translations).toEqual(["1", "2"]);
     });
 
-    it("recovers all pages cleanly when JSON is fully complete and closed", () => {
+    it("Complete valid response -> Recovers all pages cleanly with zero unfinished IDs", () => {
       const completeJson = `
       {
         "pages": [
@@ -397,4 +443,3 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5)", () => {
     });
   });
 });
-
