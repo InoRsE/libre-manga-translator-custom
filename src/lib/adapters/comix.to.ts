@@ -7,7 +7,9 @@
 // intentionally never matches and stays 0 - the page cache and
 // series-context key degrade to chapter level on this site.
 
-export default {
+import type { SiteRule } from "../adapters";
+
+const comixRule: SiteRule = {
   id: "comix",
   domain: "comix.to",
   seriesName: {
@@ -15,15 +17,19 @@ export default {
     source: "title",
   },
   chapterId: {
-    regex: "-chapter-([\\d.]+)",
+    regex: "(?:-chapter-|·\\s*Ch\\.)([\\d.]+)",
     source: "path",
   },
   pageIndex: {
     regex: "^$",
     source: "path",
   },
-  containerSelector: ".reader-container, #reader",
-  imageSelector: ".reader-container img, .chapter-images img",
+  containerSelector: ".rpage-main, main, .reader-container, #reader, .reader, #chapter-images, [data-reader], .comic-container, .comic-pages",
+  imageSelector: "img.rpage-page__img[src]:not([src='']), .rpage-page__img, .rpage-page img, .reader-container img, .chapter-images img, #reader img, .reader img, #chapter-images img, [data-reader] img, .comic-container img, .comic-pages img, main img",
+  pageCountSelector: ".rpage-page[data-page], [data-page], [class*='page-total'], [class*='total-pages'], [data-total-pages], select[name='page'], .pagination, [class*='pages-count'], select.page-select, [class*='counter']",
+  expectedCountRegex: "(?:\\/|of)\\s*(\\d+)",
   pillPosition: "top-left",
   toolbarPosition: "top-left",
-} satisfies SiteRule;
+};
+
+export default comixRule;

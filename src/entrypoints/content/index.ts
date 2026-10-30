@@ -2,6 +2,8 @@ import Overlay from "@/lib/components/Overlay.svelte";
 import Sidebar from "@/lib/components/Sidebar.svelte";
 import FloatingTrigger from "@/lib/components/FloatingTrigger.svelte";
 import { AutoTranslateOrchestrator } from "./auto-translate";
+import { ChapterPreparationManager } from "./chapter-prep";
+import { VisionBatchCoordinator } from "@/lib/gemini/batch-coordinator";
 import * as Registry from "./translation-registry";
 import { mount, unmount } from "svelte";
 import { ShadowRootContentScriptUi } from "#imports";
@@ -31,10 +33,34 @@ const srcKey = (src: string) =>
 // Wait until the image has a real layout (loaded + non-zero rendered box).
 // Measuring a hidden/not-yet-loaded image freezes the wrapper at 0×0 and
 // misplaces the whole overlay on revisit.
+// Background-tab safe: uses setTimeout so progress never freezes when the tab is unfocused.
 async function waitForLaidOutImage(
   img: MangaTargetElement,
-  timeoutMs = 3000,
+  timeoutMs = 8000,
 ): Promise<boolean> {
+  if (img instanceof HTMLImageElement) {
+    if (img.loading === "lazy") img.loading = "eager";
+    const dataSrc =
+      img.getAttribute("data-src") ||
+      img.getAttribute("data-lazy-src") ||
+      img.getAttribute("data-original") ||
+      img.getAttribute("data-url");
+    if (
+      dataSrc &&
+      (!img.src ||
+        img.src.startsWith("data:image/svg") ||
+        img.src === window.location.href)
+    ) {
+      img.src = dataSrc;
+    }
+    if (!img.complete && img.src) {
+      try {
+        const preload = new Image();
+        preload.src = img.src;
+      } catch {}
+    }
+  }
+
   const ready = () => {
     const naturalW = "naturalWidth" in img ? img.naturalWidth : img.width;
     const naturalH = "naturalHeight" in img ? img.naturalHeight : img.height;
@@ -58,7 +84,9 @@ async function waitForLaidOutImage(
   const start = performance.now();
   while (performance.now() - start < timeoutMs) {
     if (!document.body.contains(img)) return false;
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    // When the tab is in the background, requestAnimationFrame is paused by Chrome.
+    // Use setTimeout so chapter preparation advances in background tabs.
+    await new Promise<void>((r) => setTimeout(r, 60));
     if (ready()) return true;
   }
   return ready();
@@ -146,6 +174,29 @@ export default defineContentScript({
       { url: string; boxesKey: string }
     >(); // inpainted base images, keyed to the exact set of painted boxes
     const debugEntryIdBySrc = new Map<string, string>(); // src → last debug entry id
+    const lastTranslateInfoBySrc = new Map<
+      string,
+      {
+        mode: string;
+        workflow?: "vision" | "text" | "vision-batch";
+        duration: number;
+        ocrMs?: number;
+        translateMs?: number;
+        fallback?: boolean;
+        fallbackReason?: string;
+        ocrBoxesTotal?: number;
+        ocrBoxesRecognized?: number;
+        ocrCompleteness?: number;
+        batchInfo?: {
+          batchSize: number;
+          isBatch: boolean;
+          batchDurationMs?: number;
+          companionSrc?: string;
+        };
+      }
+    >();
+    const visionBatchCoordinator = new VisionBatchCoordinator();
+    let chapterPrepManager: ChapterPreparationManager | null = null;
     const overlays = new Map<
       string,
       { ui: ShadowRootContentScriptUi<any>; wrapper: HTMLElement }
@@ -170,7 +221,11 @@ export default defineContentScript({
     });
 
     async function startTranslationPipeline(imgElement: MangaTargetElement) {
-      if (!imgElement || !document.body.contains(imgElement)) return;
+      if (!imgElement || !document.body.contains(imgElement)) {
+        const raw = imgElement ? getElementSrc(imgElement) : "";
+        if (raw) Registry.markIdle(raw);
+        return;
+      }
       const rawSrc = getElementSrc(imgElement);
       if (!rawSrc) return;
       const clicked = srcKey(rawSrc);
@@ -212,7 +267,10 @@ export default defineContentScript({
       // page, not-yet-loaded). Geometry captured now would freeze the wrapper
       // at 0×0. Nothing is claimed yet, so a plain return is safe — the queue
       // releases the slot and rescan retries when the page is visible.
-      if (!(await waitForLaidOutImage(imgElement))) return;
+      if (!(await waitForLaidOutImage(imgElement))) {
+        Registry.markIdle(originalSrc);
+        return;
+      }
 
       // Claim the pipeline SYNCHRONOUSLY (before the first await below)
       // so queue slot accounting sees pending on the same tick the queue
@@ -454,6 +512,8 @@ export default defineContentScript({
                   const runtimeItems = await storage.getItems([
                     "local:gemini-key",
                     "sync:gemini-model",
+                    "sync:gemini-workflow",
+                    "sync:gemini-batch-vision",
                     "sync:ocr-min-confidence",
                     "sync:ocr-engine",
                     "sync:llm-model",
@@ -469,36 +529,77 @@ export default defineContentScript({
                     runtimeItems.map((i) => [i.key, i.value]),
                   );
 
-                  const resp = await browser.runtime.sendMessage({
-                    type: "TRANSLATE_IMAGE",
-                    data: {
-                      src: src,
-                      bboxes,
-                      seriesContext,
-                    },
-                    config: {
-                      currentMode: curMode,
-                      targetLang: tgtLang,
-                      sourceLang: srcLang,
-                      geminiKey: runtime["local:gemini-key"] as string | undefined,
-                      geminiModel: runtime["sync:gemini-model"] as string | undefined,
-                      ocrMinConfidence: runtime["sync:ocr-min-confidence"] as number | undefined,
-                      ocrEngine:
-                        (runtime["sync:ocr-engine"] as string | undefined) ??
-                        DefaultConfig.ocrEngine,
-                      llmModel: runtime["sync:llm-model"] as string | undefined,
-                      llmTemperature: runtime["sync:llm-temperature"] as number | undefined,
-                      serverHost: runtime["local:server-host"] as string | undefined,
-                      serverSchema: runtime["local:server-schema"] as string | undefined,
-                      serverModel: runtime["local:server-model"] as string | undefined,
-                      useServerApiKey: runtime["local:use-server-api-key"] as boolean | undefined,
-                      serverApiKey: runtime["local:server-api-key"] as string | undefined,
-                      scriptGate:
-                        (runtime["sync:script-gate"] as boolean | undefined) ??
-                        DefaultConfig.scriptGate,
-                      gateForce: opts?.gateForce ?? false,
-                    },
-                  });
+                  const curGeminiWorkflow =
+                    (runtime["sync:gemini-workflow"] as "vision" | "text" | undefined) ??
+                    DefaultConfig.geminiWorkflow;
+                  const isGeminiBatchVision =
+                    curMode === "gemini" &&
+                    Boolean(runtime["sync:gemini-batch-vision"] ?? DefaultConfig.geminiBatchVision) &&
+                    curGeminiWorkflow !== "text";
+
+                  const messageConfig = {
+                    currentMode: curMode,
+                    targetLang: tgtLang,
+                    sourceLang: srcLang,
+                    geminiKey: runtime["local:gemini-key"] as string | undefined,
+                    geminiModel: runtime["sync:gemini-model"] as string | undefined,
+                    geminiWorkflow: curGeminiWorkflow,
+                    ocrMinConfidence: runtime["sync:ocr-min-confidence"] as number | undefined,
+                    ocrEngine:
+                      (runtime["sync:ocr-engine"] as string | undefined) ??
+                      DefaultConfig.ocrEngine,
+                    llmModel: runtime["sync:llm-model"] as string | undefined,
+                    llmTemperature: runtime["sync:llm-temperature"] as number | undefined,
+                    serverHost: runtime["local:server-host"] as string | undefined,
+                    serverSchema: runtime["local:server-schema"] as string | undefined,
+                    serverModel: runtime["local:server-model"] as string | undefined,
+                    useServerApiKey: runtime["local:use-server-api-key"] as boolean | undefined,
+                    serverApiKey: runtime["local:server-api-key"] as string | undefined,
+                    scriptGate:
+                      (runtime["sync:script-gate"] as boolean | undefined) ??
+                      DefaultConfig.scriptGate,
+                    gateForce: opts?.gateForce ?? false,
+                  };
+
+                  const isChapterPrep = Boolean(
+                    chapterPrepManager?.isActive() &&
+                    chapterPrepManager?.isPreparingImage(originalSrc),
+                  );
+                  const hasPendingCompanion = Boolean(
+                    chapterPrepManager?.hasPendingCompanion(originalSrc),
+                  );
+
+                  let resp: any;
+                  try {
+                    if (isGeminiBatchVision && isChapterPrep) {
+                      resp = await visionBatchCoordinator.requestTranslation(
+                        {
+                          src,
+                          originalSrc,
+                          bboxes,
+                          seriesContext,
+                          config: messageConfig,
+                        },
+                        {
+                          allowBatch: true,
+                          hasPendingCompanion,
+                        },
+                      );
+                    } else {
+                      resp = await browser.runtime.sendMessage({
+                        type: "TRANSLATE_IMAGE",
+                        data: {
+                          src: src,
+                          bboxes,
+                          seriesContext,
+                        },
+                        config: messageConfig,
+                      });
+                    }
+                  } catch (err: any) {
+                    console.warn("LMT: Translation dispatch failed:", err?.message);
+                    resp = { error: err?.message ?? "Translation request failed" };
+                  }
 
                   const duration = performance.now() - t0;
 
@@ -553,6 +654,13 @@ export default defineContentScript({
                     timestamp: Date.now(),
                     success: true,
                     mode: curMode,
+                    geminiWorkflow: curMode === "gemini" ? (resp?.geminiWorkflow ?? "vision") : undefined,
+                    fallback: resp?.fallback,
+                    fallbackReason: resp?.fallbackReason,
+                    ocrBoxesTotal: resp?.ocrBoxesTotal,
+                    ocrBoxesRecognized: resp?.ocrBoxesRecognized,
+                    ocrCompleteness: resp?.ocrCompleteness,
+                    batchInfo: resp?.batchInfo,
                     version: debugCtx.version,
                     device: debugCtx.device,
                     backend: curMode === "webgpu" ? backend : undefined,
@@ -589,6 +697,20 @@ export default defineContentScript({
                       debugEntryIdBySrc.set(src, entryId);
                     })
                     .catch((err) => console.warn("LMT: debug-log write failed:", err));
+
+                  lastTranslateInfoBySrc.set(src, {
+                    mode: curMode,
+                    workflow: curMode === "gemini" ? (resp?.geminiWorkflow ?? "vision") : undefined,
+                    duration,
+                    ocrMs: resp?.timing?.ocr,
+                    translateMs: resp?.timing?.translate,
+                    fallback: resp?.fallback,
+                    fallbackReason: resp?.fallbackReason,
+                    ocrBoxesTotal: resp?.ocrBoxesTotal,
+                    ocrBoxesRecognized: resp?.ocrBoxesRecognized,
+                    ocrCompleteness: resp?.ocrCompleteness,
+                    batchInfo: resp?.batchInfo,
+                  });
 
                   const cacheKey = await translationKey();
                   storage
@@ -722,12 +844,41 @@ export default defineContentScript({
                     }
                   }
 
+                  const tRender = performance.now();
                   const translatedSrc = await drawTranslations(
                     cached.url,
                     bboxes,
                     translations,
                   );
+                  const renderMs = performance.now() - tRender;
                   translatedSrcMap.set(srcKey(translatedSrc), originalSrc);
+
+                  const debugId = debugEntryIdBySrc.get(src);
+                  if (debugId) {
+                    await updateDebugEntry(debugId, {
+                      timing: { render: renderMs },
+                    });
+                  }
+
+                  const info = lastTranslateInfoBySrc.get(src);
+                  const totalPipelineMs = (info?.duration ?? 0) + (inpaintMs ?? 0) + renderMs;
+                  const completenessStr =
+                    info?.ocrBoxesTotal !== undefined
+                      ? ` completeness=${info.ocrBoxesRecognized ?? 0}/${info.ocrBoxesTotal}(${info.ocrCompleteness ?? 0}%)`
+                      : "";
+                  const batchStr = info?.batchInfo?.isBatch
+                    ? ` batch=2(${info.batchInfo.batchDurationMs}ms)`
+                    : "";
+                  console.log(
+                    `[LMT Timing] workflow=${info?.mode === "gemini" ? (info.workflow ?? "vision") : (info?.mode ?? "unknown")}${completenessStr}${batchStr} ` +
+                    `total=${totalPipelineMs.toFixed(0)}ms ` +
+                    `[detect=${lastDetectMs ? lastDetectMs.toFixed(0) : "-"}ms, ` +
+                    `ocr=${info?.ocrMs !== undefined ? info.ocrMs.toFixed(0) : "-"}ms, ` +
+                    `gemini=${info?.translateMs !== undefined ? info.translateMs.toFixed(0) : "-"}ms, ` +
+                    `inpaint=${inpaintMs !== undefined ? inpaintMs.toFixed(0) : "-"}ms, ` +
+                    `render=${renderMs.toFixed(0)}ms]` +
+                    `${info?.fallback ? ` (FALLBACK: ${info.fallbackReason})` : ""}`
+                  );
 
                   // Persist edited translations and bboxes so cache re-open shows them
                   const cache = await storage.getItem<PageCache>(
@@ -865,6 +1016,40 @@ export default defineContentScript({
     autoTranslator.init(startTranslationPipeline);
     ctx.onInvalidated(() => autoTranslator.destroy());
 
+    // ── Chapter Preparation Engine ──────────────────────────────────────
+    chapterPrepManager = new ChapterPreparationManager(autoTranslator);
+    ctx.onInvalidated(() => chapterPrepManager?.destroy());
+
+    const onChapterPrepStart = (e: Event) => {
+      const detail = (e as CustomEvent<{ notify?: boolean }>).detail;
+      chapterPrepManager.start({ notify: detail?.notify ?? true });
+    };
+    const onChapterPrepStop = () => {
+      chapterPrepManager.stop();
+    };
+    const onChapterPrepGet = () => {
+      document.dispatchEvent(
+        new CustomEvent("lmt:chapter-prep-progress", {
+          detail: chapterPrepManager.getProgress(),
+        }),
+      );
+    };
+
+    const onChapterPrepDiagnose = () => {
+      chapterPrepManager.runDiagnostic();
+    };
+
+    document.addEventListener("lmt:chapter-prep-start", onChapterPrepStart);
+    document.addEventListener("lmt:chapter-prep-stop", onChapterPrepStop);
+    document.addEventListener("lmt:chapter-prep-get", onChapterPrepGet);
+    document.addEventListener("lmt:chapter-prep-diagnose", onChapterPrepDiagnose);
+    ctx.onInvalidated(() => {
+      document.removeEventListener("lmt:chapter-prep-start", onChapterPrepStart);
+      document.removeEventListener("lmt:chapter-prep-stop", onChapterPrepStop);
+      document.removeEventListener("lmt:chapter-prep-get", onChapterPrepGet);
+      document.removeEventListener("lmt:chapter-prep-diagnose", onChapterPrepDiagnose);
+    });
+
     // ── Floating Hover Trigger ──────────────────────────────────────────
     // Indirect hover mapping (descendant / beneath-cursor) is gated on the
     // active rule's reader container so episode cards and nav chrome on list
@@ -918,6 +1103,21 @@ export default defineContentScript({
     });
 
     browser.runtime.onMessage.addListener(async (msg, _, sendResponse) => {
+      if (msg.type === "GET_CHAPTER_STATUS") {
+        sendResponse(chapterPrepManager.getProgress());
+        return true;
+      }
+      if (msg.type === "START_CHAPTER_PREP") {
+        chapterPrepManager
+          .start({ notify: msg.data?.notify ?? true })
+          .then((prog) => sendResponse(prog));
+        return true;
+      }
+      if (msg.type === "STOP_CHAPTER_PREP") {
+        sendResponse(chapterPrepManager.stop());
+        return true;
+      }
+
       // Test Regex from popup settings to show live result
       if (msg.type === "TEST_REGEX_RULE") {
         getSiteRule([msg.data.rule]).then((result) =>

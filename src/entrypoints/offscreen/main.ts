@@ -1,5 +1,10 @@
 import { UNKNOWN_DETECTION_MODEL_MESSAGE, detectTextBubble, releaseDetection } from "@/lib/detections/main";
-import { makeSiteRuleWithGemini, translateWithGemini } from "@/lib/gemini/main";
+import {
+  makeSiteRuleWithGemini,
+  translateBatchWithGemini,
+  translateTextWithGemini,
+  translateWithGemini,
+} from "@/lib/gemini/main";
 import "@/assets/app.css";
 import { releaseOcrEngines, textRecognise } from "@/lib/ocr/main";
 import {
@@ -61,6 +66,7 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
       sourceLang,
       geminiKey,
       geminiModel,
+      geminiWorkflow,
       ocrMinConfidence,
       ocrEngine,
       llmModel,
@@ -156,6 +162,117 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
           timing: { ocr, translate: performance.now() - tTrans },
         });
       })().catch((err) => sendResponse({ error: err.message }));
+    } else if (geminiWorkflow === "text") {
+      (async () => {
+        await yieldToMain();
+        let ocrDuration = 0;
+        let ocrResults: any[] = [];
+        let ocrGate: any = { mode: "off", checked: 0, skipped: 0, unavailable: false };
+
+        try {
+          const tOcr = performance.now();
+          const ocrOut = await textRecognise(
+            src,
+            bboxes,
+            sourceLang,
+            ocrMinConfidence,
+            undefined,
+            undefined,
+            gateOptions,
+            ocrEngine,
+          );
+          ocrResults = ocrOut.results;
+          ocrGate = ocrOut.gate;
+          ocrDuration = performance.now() - tOcr;
+          await yieldToMain();
+
+          const totalBoxes = bboxes.length;
+          const texts = ocrResults.map((r) => (r.gateSkip ? "" : r.text));
+          const recognizedCount = texts.filter((t) => t && t.trim().length > 0).length;
+          const completenessRatio = totalBoxes > 0 ? recognizedCount / totalBoxes : 1;
+
+          // Critical completeness threshold:
+          // If fewer than 60% of detected speech bubbles have recognized text (e.g. 5 of 9 are blank),
+          // local OCR has experienced severe dialogue loss.
+          // Do NOT silently pretend this incomplete output is a full translation!
+          const MIN_OCR_COMPLETENESS_RATIO = 0.60;
+          if (totalBoxes > 1 && completenessRatio < MIN_OCR_COMPLETENESS_RATIO) {
+            throw new Error(
+              `Low OCR completeness: only ${recognizedCount}/${totalBoxes} dialogue boxes recognized (${Math.round(completenessRatio * 100)}%) — falling back to Vision for full dialogue recovery`,
+            );
+          }
+          if (totalBoxes === 1 && recognizedCount === 0) {
+            throw new Error(
+              "Local OCR produced empty text for the single detected dialogue box — falling back to Vision",
+            );
+          }
+
+          const tTrans = performance.now();
+          const res = await translateTextWithGemini(
+            texts,
+            geminiKey,
+            targetLang,
+            sourceLang,
+            seriesContext,
+            geminiModel,
+            llmTemperature,
+          );
+          const transDuration = performance.now() - tTrans;
+
+          sendResponse({
+            ...res,
+            sourceTexts: ocrResults.map((r) => r.text),
+            gateSkip: ocrResults.map((r) => r.gateSkip ?? null),
+            gate: ocrGate,
+            timing: { ocr: ocrDuration, translate: transDuration },
+            backend: await detectBackend(),
+            geminiWorkflow: "text",
+            fallback: false,
+            ocrBoxesTotal: totalBoxes,
+            ocrBoxesRecognized: recognizedCount,
+            ocrCompleteness: Math.round(completenessRatio * 100),
+          });
+        } catch (err: any) {
+          console.warn("LMT: Fast text workflow failed or declined, falling back to Vision:", err?.message);
+          const fallbackReason = err?.message ?? "Text translation failed";
+          const totalBoxes = bboxes.length;
+          const recognizedCount = ocrResults
+            .map((r) => (r.gateSkip ? "" : r.text))
+            .filter((t) => t && t.trim().length > 0).length;
+          const completenessRatio = totalBoxes > 0 ? recognizedCount / totalBoxes : 0;
+
+          const tVision = performance.now();
+          const res = await translateWithGemini(
+            src,
+            bboxes,
+            geminiKey,
+            targetLang,
+            sourceLang,
+            seriesContext,
+            geminiModel,
+            llmTemperature,
+          );
+          const visionDuration = performance.now() - tVision;
+
+          sendResponse({
+            ...res,
+            sourceTexts: res.sourceTexts ?? (ocrResults.length ? ocrResults.map((r) => r.text) : new Array(bboxes.length).fill("")),
+            gateSkip: new Array(bboxes.length).fill(null),
+            gate: ocrGate,
+            timing: {
+              ...(ocrDuration > 0 ? { ocr: ocrDuration } : {}),
+              translate: visionDuration,
+            },
+            backend: await detectBackend(),
+            geminiWorkflow: "text",
+            fallback: true,
+            fallbackReason,
+            ocrBoxesTotal: totalBoxes,
+            ocrBoxesRecognized: recognizedCount,
+            ocrCompleteness: Math.round(completenessRatio * 100),
+          });
+        }
+      })().catch((err) => sendResponse({ error: err.message }));
     } else {
       (async () => {
         await yieldToMain();
@@ -180,9 +297,47 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
           gate: { mode: "off", checked: 0, skipped: 0, unavailable: false },
           timing: { translate: performance.now() - tTrans },
           backend: await detectBackend(),
+          geminiWorkflow: "vision",
+          fallback: false,
         });
       })().catch((err) => sendResponse({ error: err.message }));
     }
+
+    return true;
+  }
+
+  if (msg.type === "OFFSCREEN_TRANSLATE_BATCH_IMAGES") {
+    const {
+      targetLang,
+      sourceLang,
+      geminiKey,
+      geminiModel,
+      llmTemperature,
+    } = msg.config;
+    const { pages, seriesContext } = msg.data;
+
+    (async () => {
+      await yieldToMain();
+      const tTrans = performance.now();
+      const res = await translateBatchWithGemini(
+        pages,
+        geminiKey,
+        targetLang,
+        sourceLang,
+        seriesContext,
+        geminiModel,
+        llmTemperature,
+      );
+      const transDuration = performance.now() - tTrans;
+
+      sendResponse({
+        ...res,
+        timing: { translate: transDuration },
+        backend: await detectBackend(),
+        geminiWorkflow: "vision-batch",
+        fallback: false,
+      });
+    })().catch((err) => sendResponse({ error: err.message }));
 
     return true;
   }

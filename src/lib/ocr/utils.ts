@@ -42,10 +42,10 @@ export function sliceImageDataIntoLines(
   if (height < 20 || width < 10) return [imageData];
 
   // Fix: tunable split sensitivity so stacked glyphs stay on one line.
-  const thresholdRatio = opts?.thresholdRatio ?? 0.45;
+  const thresholdRatio = opts?.thresholdRatio ?? 0.40;
   const mergeGap = opts?.mergeGap ?? 4;
-  const PAD_Y = opts?.padY ?? 4;
-  const PAD_X = opts?.padX ?? 4;
+  const PAD_Y = opts?.padY ?? 5;
+  const PAD_X = opts?.padX ?? 5;
 
   const grayPixels = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
@@ -106,7 +106,7 @@ export function sliceImageDataIntoLines(
     }
   }
 
-  if (rawSpans.length === 0) return [imageData];
+  if (rawSpans.length === 0) return [padImageForOCR(imageData, 4)];
 
   // Merge nearby spans to keep diacritics / split strokes with line
   const mergedSpans: { start: number; end: number }[] = [];
@@ -161,7 +161,7 @@ export function sliceImageDataIntoLines(
     lines.push(ctx.getImageData(0, 0, lineW, lineH));
   }
 
-  return lines.length > 0 ? lines : [imageData];
+  return lines.length > 0 ? lines : [padImageForOCR(imageData, 4)];
 }
 
 export function normalizePolarity(imageData: ImageData): ImageData {
@@ -213,7 +213,6 @@ const VERTICAL_LANGUAGES = [
   "Japanese",
   "Chinese (Simplified)",
   "Chinese (Traditional)",
-  "Auto-Detect",
 ];
 
 function detectVerticalColumns(
@@ -296,8 +295,10 @@ export function cropBubbleFromImage(
 
   let shouldRotate = false;
   if (isVerticalLanguage) {
-    // Only rotate if column variance confirms vertical layout; do not blindly rotate tall horizontal bubbles
-    if (h / w >= 0.8) {
+    // Japanese and Chinese vertical text in manga is laid out in tall columns.
+    // Legitimate vertical columns have aspect ratios of h/w >= 1.5.
+    // Horizontal or oval bubbles (h/w < 1.5) must never be rotated.
+    if (h / w >= 1.5) {
       shouldRotate = detectVerticalColumns(bitmap, x1, y1, w, h);
     }
   }
@@ -360,6 +361,7 @@ export function preprocessCrop(
   const raw = ctx.getImageData(0, 0, scaledW, recImgHeight).data;
   const channels = 3;
   const buffer = new Float32Array(channels * recImgHeight * targetW);
+  buffer.fill(1.0); // Normalize padding to white background (1.0 = (255/255 - 0.5)/0.5)
 
   for (let row = 0; row < recImgHeight; row++) {
     for (let col = 0; col < scaledW; col++) {
@@ -495,4 +497,18 @@ export function padImageForOCR(imageData: ImageData, padding = 4): ImageData {
   ctx.drawImage(tempCanvas, padding, padding);
   
   return ctx.getImageData(0, 0, targetW, targetH);
+}
+
+export const SCANLATION_WATERMARK_REGEX =
+  /\b(?:mangapanda|mangastream|mangarock|asurascan[s]?|reaperscan[s]?|flamecomic[s]?|flamescan[s]?|comick|batoto|bato\.to|readmanga)\b/i;
+
+export function isWatermarkText(text: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  if (SCANLATION_WATERMARK_REGEX.test(trimmed)) return true;
+  // If text is purely a URL or scanlation credit domain without dialogue
+  if (/^(?:https?:\/\/)?(?:www\.)?[a-z0-9-_]+(?:\.[a-z]{2,})+(?:\/[^\s]*)?$/i.test(trimmed)) {
+    return true;
+  }
+  return false;
 }

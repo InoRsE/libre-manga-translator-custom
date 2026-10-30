@@ -120,6 +120,11 @@ export const DefaultConfig = {
   llmTemperature: 0.3,
   minTranslations: 5, // number of translations per series before resetting context
 
+  // Gemini translation workflow: "vision" (full-page image with numbered boxes) | "text" (local OCR + text-only batch)
+  geminiWorkflow: "vision" as "vision" | "text" | "vision-batch",
+  // Two-image vision batching experiment (M1.3): sends 2 pages in 1 Gemini Vision request during Chapter Preparation
+  geminiBatchVision: false,
+
   geminiModels: [
     { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
     { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },

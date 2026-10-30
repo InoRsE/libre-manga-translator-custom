@@ -29,6 +29,10 @@ export interface SiteRule {
   containerSelector?: string;
   /** CSS selector targeting chapter page <img> elements */
   imageSelector?: string;
+  /** CSS selector targeting total page count indicator or page select dropdown */
+  pageCountSelector?: string;
+  /** Optional regex to parse expected page count from pageCountSelector element text */
+  expectedCountRegex?: string;
   /** Where to anchor the floating translate pill on each image */
   pillPosition?: PillPosition;
   /** Where to initially position the floating toolbar overlay */
@@ -39,7 +43,10 @@ export interface SiteRule {
 // Long-trusted sites live here. For everything else, drop a new adapter file
 // into src/lib/adapters/ - it is auto-imported at build time.
 // See src/lib/adapters/README.md.
+import comixRule from "./adapters/comix.to";
+
 export const COMMUNITY_RULES: SiteRule[] = [
+  comixRule,
   {
     id: "mangadex",
     domain: "mangadex.org",

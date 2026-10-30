@@ -1,5 +1,5 @@
 import { env } from "@/lib/env";
-import { downloadArtifactHF, arrayBufferToBase64DataUrl, isArtifactCached, streamArtifactToCache, resolveArtifactUrl, isAbortError, clearPartialByUrl, clearAllPartialDownloads } from "@/lib/utils";
+import { downloadArtifactHF, arrayBufferToBase64DataUrl, sniffMime, isArtifactCached, streamArtifactToCache, resolveArtifactUrl, isAbortError, clearPartialByUrl, clearAllPartialDownloads } from "@/lib/utils";
 import { checkArtifactUpdate, forceRefreshArtifact } from "@/lib/models/updates";
 import { detectHardware, ensureOffscreen } from "./utils";
 import { DefaultConfig, SUPPORTED_LANG_GROUPS, normalizeDetectionModel, resolveLangGroup } from "@/lib/configs";
@@ -393,6 +393,340 @@ export default defineBackground(() => {
       return true;
     }
 
+    // Chrome notification trigger with safe fallback
+    if (msg.type === "SHOW_NOTIFICATION") {
+      const { title, message } = msg.data ?? {};
+      try {
+        const notif = (browser as any).notifications;
+        if (notif?.create) {
+          notif.create({
+            type: "basic",
+            iconUrl: browser.runtime.getURL("/icon/128.png"),
+            title: title || "Libre Manga Translator",
+            message: message || "Chapter ready!",
+          });
+        }
+      } catch (e) {
+        console.warn("LMT: Failed to create Chrome notification:", e);
+      }
+      respond({ success: true });
+      return true;
+    }
+
+    // Automatic CBZ Chapter Archive Download (M1.4.1 REPAIR D)
+    if (msg.type === "DOWNLOAD_CHAPTER_CBZ") {
+      const { dataUrl, filename } = msg.data ?? {};
+      const task = async () => {
+        if (!dataUrl || typeof dataUrl !== "string") {
+          return {
+            success: false,
+            downloadState: "download_failed",
+            error: "Invalid or empty archive payload",
+          };
+        }
+
+        const downloadsApi = (browser as any).downloads;
+        if (!downloadsApi?.download) {
+          return {
+            success: false,
+            downloadState: "download_failed",
+            error: "Downloads API not supported",
+          };
+        }
+
+        const downloadId = await downloadsApi.download({
+          url: dataUrl,
+          filename: filename || "manga_chapter.cbz",
+          saveAs: false, // Zero confirmation prompts
+        });
+
+        // M1.4.2 REPAIR 4: Observe actual browser download completion or interruption
+        // with status reconciliation to avoid missing rapid synchronous completions on fast SSDs.
+        return new Promise((resolve) => {
+          let settled = false;
+
+          const cleanupAndResolve = (result: any) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutTimer);
+            clearInterval(pollInterval);
+            if (downloadsApi.onChanged?.removeListener) {
+              try {
+                downloadsApi.onChanged.removeListener(listener);
+              } catch {}
+            }
+            resolve(result);
+          };
+
+          const timeoutTimer = setTimeout(() => {
+            cleanupAndResolve({
+              success: false,
+              downloadState: "download_failed",
+              downloadId,
+              error: "Browser download timed out after 120s",
+            });
+          }, 120000);
+
+          const listener = (delta: any) => {
+            if (delta.id === downloadId) {
+              if (delta.state?.current === "complete") {
+                cleanupAndResolve({
+                  success: true,
+                  downloadState: "download_completed",
+                  downloadId,
+                });
+              } else if (
+                delta.state?.current === "interrupted" ||
+                delta.error?.current
+              ) {
+                cleanupAndResolve({
+                  success: false,
+                  downloadState: "download_failed",
+                  downloadId,
+                  error: delta.error?.current || "Download interrupted",
+                });
+              }
+            }
+          };
+
+          if (downloadsApi.onChanged?.addListener) {
+            downloadsApi.onChanged.addListener(listener);
+          }
+
+          const handleSearchItems = (items: any[]) => {
+            const item = Array.isArray(items) ? items[0] : null;
+            if (!item || settled) return;
+            if (item.state === "complete") {
+              cleanupAndResolve({
+                success: true,
+                downloadState: "download_completed",
+                downloadId,
+              });
+            } else if (item.state === "interrupted" || item.error) {
+              cleanupAndResolve({
+                success: false,
+                downloadState: "download_failed",
+                downloadId,
+                error: item.error || "Download interrupted",
+              });
+            }
+          };
+
+          const reconcile = () => {
+            if (settled) return;
+            if (typeof downloadsApi.search === "function") {
+              try {
+                const searchRes = downloadsApi.search({ id: downloadId });
+                if (searchRes && typeof searchRes.then === "function") {
+                  searchRes
+                    .then((items: any[]) => handleSearchItems(items))
+                    .catch(() => {});
+                } else {
+                  downloadsApi.search({ id: downloadId }, (items: any[]) =>
+                    handleSearchItems(items),
+                  );
+                }
+              } catch {}
+            }
+          };
+
+          // Reconcile immediately and periodically every 250ms
+          setTimeout(reconcile, 0);
+          const pollInterval = setInterval(reconcile, 250);
+        });
+
+        // Fallback for testing environments where onChanged is not simulated
+        return {
+          success: true,
+          downloadState: "download_started",
+          downloadId,
+        };
+      };
+      keepAliveWhile(task().then(respond).catch(respondErr));
+      return true;
+    }
+
+    // Service worker keep-alive heartbeat while background chapter preparation runs
+    if (msg.type === "CHAPTER_PREP_HEARTBEAT") {
+      respond({ alive: true, timestamp: Date.now() });
+      return true;
+    }
+
+    // M1.4.3 & M1.4.5: Decoupled Chapter Page Asset Fetch & Integrity Verification
+    // Fetches manga page images directly from the background worker bypassing CORS
+    // and reader DOM virtualization.
+    // Reference B / Comix CDN Fix: Comix.to image CDNs strictly reject requests that carry a Referer
+    // header (HTTP 403 Forbidden). For Comix or explicit no-referrer requests, Referer is omitted/stripped.
+    if (msg.type === "FETCH_CHAPTER_PAGE_IMAGE") {
+      const { url, referer, noReferer } = msg.data ?? {};
+      const task = async () => {
+        if (!url || typeof url !== "string") {
+          return { success: false, error: "Invalid or empty image URL" };
+        }
+        if (!isAllowedImageUrl(url, referer)) {
+          return { success: false, error: "Security rejection: Disallowed or unsafe image URL" };
+        }
+
+        const isComixDomain =
+          noReferer === true ||
+          (referer && (referer.includes("comix.to") || referer.includes("comix.ws"))) ||
+          url.includes("comix.to") ||
+          url.includes("comix.ws");
+
+        const ruleId = 100000 + Math.floor(Math.random() * 800000);
+        const dnr = (browser as any).declarativeNetRequest;
+        let dnrApplied = false;
+
+        if (dnr?.updateSessionRules) {
+          try {
+            if (isComixDomain) {
+              // Strip Referer for Comix CDNs (Reference B: Comix image CDNs return 403 when Referer is sent)
+              await dnr.updateSessionRules({
+                removeRuleIds: [ruleId],
+                addRules: [
+                  {
+                    id: ruleId,
+                    priority: 1,
+                    action: {
+                      type: "modifyHeaders",
+                      requestHeaders: [
+                        {
+                          header: "Referer",
+                          operation: "remove",
+                        },
+                      ],
+                    },
+                    condition: {
+                      urlFilter: url.replace(/[?#].*$/, ""),
+                      resourceTypes: ["xmlhttprequest", "other", "image"],
+                    },
+                  },
+                ],
+              });
+              dnrApplied = true;
+            } else if (referer) {
+              // For other sites requiring hotlink referer
+              await dnr.updateSessionRules({
+                removeRuleIds: [ruleId],
+                addRules: [
+                  {
+                    id: ruleId,
+                    priority: 1,
+                    action: {
+                      type: "modifyHeaders",
+                      requestHeaders: [
+                        {
+                          header: "Referer",
+                          operation: "set",
+                          value: referer,
+                        },
+                      ],
+                    },
+                    condition: {
+                      urlFilter: url.replace(/[?#].*$/, ""),
+                      resourceTypes: ["xmlhttprequest", "other", "image"],
+                    },
+                  },
+                ],
+              });
+              dnrApplied = true;
+            }
+          } catch (e) {
+            console.warn("LMT: Failed to update DNR rule for page asset fetch:", e);
+          }
+        }
+
+        try {
+          const fetchOptions: RequestInit = {
+            method: "GET",
+            headers: {
+              Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            },
+            credentials: "omit",
+            referrerPolicy: isComixDomain ? "no-referrer" : undefined,
+          };
+          if (isComixDomain) {
+            fetchOptions.referrer = "";
+          }
+
+          const res = await fetch(url, fetchOptions);
+          if (!res.ok) {
+            return {
+              success: false,
+              httpStatus: res.status,
+              error: `HTTP fetch failed with status ${res.status}: ${res.statusText}`,
+            };
+          }
+          const buf = await res.arrayBuffer();
+          if (buf.byteLength === 0) {
+            return { success: false, httpStatus: res.status, error: "Empty buffer received for page image" };
+          }
+          const bytes = new Uint8Array(buf);
+          const mime = sniffMime(bytes);
+
+          // Validate magic bytes
+          const isValidImage =
+            (bytes[0] === 0xff && bytes[1] === 0xd8) || // JPEG
+            (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) || // PNG
+            (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) || // WebP
+            (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) || // GIF
+            (bytes[4] === 0x66 && bytes[5] === 0x79 && bytes[6] === 0x70); // AVIF
+
+          if (!isValidImage) {
+            return {
+              success: false,
+              httpStatus: res.status,
+              error: "Downloaded asset is not a valid image format (unrecognized magic bytes)",
+            };
+          }
+
+          let width = 0;
+          let height = 0;
+          try {
+            if (typeof createImageBitmap === "function") {
+              const blob = new Blob([buf], { type: mime });
+              const bitmap = await createImageBitmap(blob);
+              width = bitmap.width;
+              height = bitmap.height;
+              bitmap.close();
+            }
+          } catch {}
+
+          let hash = "";
+          try {
+            if (typeof crypto !== "undefined" && crypto.subtle?.digest) {
+              const hashBuf = await crypto.subtle.digest("SHA-256", buf);
+              const hashArr = Array.from(new Uint8Array(hashBuf));
+              hash = hashArr.map((b) => b.toString(16).padStart(2, "0")).join("");
+            }
+          } catch {}
+
+          const dataUrl = arrayBufferToBase64DataUrl(buf);
+          return {
+            success: true,
+            dataUrl,
+            mimeType: mime,
+            byteLength: buf.byteLength,
+            width,
+            height,
+            hash,
+            httpStatus: res.status,
+          };
+        } finally {
+          if (dnrApplied) {
+            await dnr
+              .updateSessionRules({
+                removeRuleIds: [ruleId],
+              })
+              .catch(() => {});
+          }
+        }
+      };
+
+      keepAliveWhile(task().then(respond).catch(respondErr));
+      return true;
+    }
+
     // Proxy image fetch for cross-origin or hotlink-protected images (Cloudflare, Referer checks).
     // Uses declarativeNetRequest to inject the proper Referer so CDNs accept the request,
     // then converts to base64 data URL to completely bypass CORS/network downstream.
@@ -469,9 +803,13 @@ export default defineBackground(() => {
     // for a slot BEFORE the execution timeout starts, so queue wait never
     // consumes the per-job budget.
     if (
-      ["DETECT_BBOX", "TRANSLATE_IMAGE", "MAKE_SITE_RULE_AI", "INPAINT_IMAGE"].includes(
-        msg.type,
-      )
+      [
+        "DETECT_BBOX",
+        "TRANSLATE_IMAGE",
+        "TRANSLATE_BATCH_IMAGES",
+        "MAKE_SITE_RULE_AI",
+        "INPAINT_IMAGE",
+      ].includes(msg.type)
     ) {
       // Quality (LaMa) runs on wasm CPU (~30s+ per 512px tile), so a Quality
       // inpaint over N regions needs a per-region budget, not a flat page budget.
@@ -486,6 +824,8 @@ export default defineBackground(() => {
           ? Math.max(300_000, inpaintBoxes * 60_000)
           : isLocalTranslate
             ? 480_000
+          : msg.type === "TRANSLATE_BATCH_IMAGES"
+            ? 240_000
           : msg.type === "TRANSLATE_IMAGE" || msg.type === "INPAINT_IMAGE"
             ? 180_000
             : 90_000;

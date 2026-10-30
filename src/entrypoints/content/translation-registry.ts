@@ -13,8 +13,23 @@ import { storage } from "#imports";
 
 export type TranslationStatus = "idle" | "pending" | "done";
 
+export interface RenderedPageResult {
+  renderedUrl: string;
+  translations?: string[];
+  sourceTexts?: string[];
+}
+
 const bySrc = new Map<string, TranslationStatus>(); // srcKey(originalSrc) → status
 const byCacheKey = new Map<string, TranslationStatus>(); // local:page-cache-… → status
+const renderedResults = new Map<string, RenderedPageResult>(); // srcKey(originalSrc) → rendered result
+
+export function setRenderedResult(src: string, result: RenderedPageResult): void {
+  renderedResults.set(srcKeyOf(src), result);
+}
+
+export function getRenderedResult(src: string): RenderedPageResult | undefined {
+  return renderedResults.get(srcKeyOf(src));
+}
 
 export function srcKeyOf(src: string): string {
   return src.startsWith("data:") ? quickHash(src) : src;
@@ -59,7 +74,14 @@ export function markPending(src: string, cacheKey?: string): void {
   );
 }
 
-export function markDone(src: string, cacheKey?: string): void {
+export function markDone(
+  src: string,
+  cacheKey?: string,
+  result?: RenderedPageResult,
+): void {
+  if (result) {
+    setRenderedResult(src, result);
+  }
   bySrc.set(srcKeyOf(src), "done");
   if (cacheKey) {
     byCacheKey.set(cacheKey, "done");
@@ -78,7 +100,12 @@ export function markDone(src: string, cacheKey?: string): void {
   }
   document.dispatchEvent(
     new CustomEvent("lmt:translation-status", {
-      detail: { src, cacheKey, status: "done" as const },
+      detail: {
+        src,
+        cacheKey,
+        status: "done" as const,
+        result: result ?? getRenderedResult(src),
+      },
     }),
   );
 }

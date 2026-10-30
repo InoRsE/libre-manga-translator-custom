@@ -341,10 +341,15 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
 
     loadingMsg = "Translating text…";
 
-    const result = await requestTextTranslation(
-      $state.snapshot(bboxes),
-      isManuallySorted,
-    );
+    let result: any;
+    try {
+      result = await requestTextTranslation(
+        $state.snapshot(bboxes),
+        isManuallySorted,
+      );
+    } catch (err: any) {
+      result = { error: err?.message ?? "Translation request failed" };
+    }
     if (typeof result === "object" && "error" in result) {
       mode = "refining";
       showError(result.error);
@@ -375,7 +380,13 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
       return;
     }
     mode = "results";
-    Registry.markDone(originalSrc);
+    const freshResult: Registry.RenderedPageResult = {
+      renderedUrl: translatedUrl,
+      translations: $state.snapshot(translations),
+      sourceTexts: $state.snapshot(sourceTexts),
+    };
+    Registry.setRenderedResult(originalSrc, freshResult);
+    Registry.markDone(originalSrc, undefined, freshResult);
   }
 
   async function handleConfirm() {
@@ -695,7 +706,13 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
       translations = initialCache.translations ?? [];
       sourceTexts = initialCache.sourceTexts ?? [];
       cleanedUrl = initialCache.cleanedSrc ?? "";
-      Registry.markDone(originalSrc);
+      const cachedResult: Registry.RenderedPageResult = {
+        renderedUrl: translatedUrl,
+        translations: initialCache.translations ?? [],
+        sourceTexts: initialCache.sourceTexts ?? [],
+      };
+      Registry.setRenderedResult(originalSrc, cachedResult);
+      Registry.markDone(originalSrc, undefined, cachedResult);
     } else {
       const [skipRefining, autoTranslate, currentMode] = await Promise.all([
         storage.getItem<boolean>("sync:skip-bbox-refining"),
@@ -707,8 +724,22 @@ function applyBboxesSort(direction: "rtl" | "ltr" = "rtl") {
       // what is uploaded. Zero boxes still opens the editor — there is nothing to
       // number, and an unnumbered page gives the model no region to answer for.
       const skipStage = skipRefining || autoTranslate || currentMode === "gemini";
-      if (skipStage && bboxes.length > 0) {
-        await executeTranslation();
+      if (skipStage) {
+        if (bboxes.length > 0) {
+          await executeTranslation();
+        } else {
+          // Page has 0 detected speech bubbles (art spread, cover, or no text).
+          // Settle as done so chapter preparation and auto-translate can proceed.
+          mode = "results";
+          translatedUrl = rawImageUrl ?? "";
+          const zeroResult: Registry.RenderedPageResult = {
+            renderedUrl: translatedUrl,
+            translations: [],
+            sourceTexts: [],
+          };
+          Registry.setRenderedResult(originalSrc, zeroResult);
+          Registry.markDone(originalSrc, undefined, zeroResult);
+        }
       } else {
         mode = "refining";
         Registry.markIdle(originalSrc);
