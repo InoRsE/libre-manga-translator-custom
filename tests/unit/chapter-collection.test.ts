@@ -33,6 +33,17 @@ let mockDownloadResponse: any = {
       if (msg.type === "DOWNLOAD_CHAPTER_CBZ") {
         return Promise.resolve(mockDownloadResponse);
       }
+      if (msg.type === "FETCH_CHAPTER_PAGE_IMAGE") {
+        return Promise.resolve({
+          success: true,
+          dataUrl: VALID_1PX_PNG_DATAURL,
+          mimeType: "image/png",
+          byteLength: 68,
+          width: 800,
+          height: 1200,
+          hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        });
+      }
       return Promise.resolve({ success: true });
     },
     getURL: (p: string) => p,
@@ -57,6 +68,10 @@ const {
   extractExpectedPageCount,
   findChapterImages,
   discoverChapterImagesProgressive,
+  getCapturedPagesFromBridge,
+  extractChapterIdentity,
+  acquirePageAsset,
+  acquireChapterAssets,
   ChapterPreparationManager,
 } = await import("@/entrypoints/content/chapter-prep");
 
@@ -64,6 +79,7 @@ const {
   saveChapterRecord,
   getChapterRecord,
   savePageRecord,
+  getPageRecord,
   getChapterPages,
   clearInMemoryStore,
   setMockSavePageFailureHook,
@@ -1104,6 +1120,236 @@ describe("Complete Chapter Collection & Offline Artifacts (M1.4 & M1.4.1)", () =
       expect(eventReceived.verdict).toBe("INCOMPLETE_DISCOVERY");
 
       document.removeEventListener("lmt:chapter-prep-diagnostic-result", diagListener);
+      manager.destroy();
+    });
+  });
+
+  describe("M1.4.3 Reliable Comix.to Chapter Collector Acceptance Tests", () => {
+    it("M1.4.3 Test 1: Extracts and orders bridge-captured pages without DOM virtualization dependency", () => {
+      // Simulate MAIN world TextDecoder bridge attribute
+      const capturedPayload = Array.from({ length: 22 }, (_, i) => ({
+        index: i,
+        pageNumber: i + 1,
+        url: `https://img.comix.to/zipang-54/page_${String(i + 1).padStart(2, "0")}.webp`,
+        width: 800,
+        height: 1200,
+      }));
+      document.documentElement.setAttribute(
+        "data-lmt-captured-pages",
+        JSON.stringify(capturedPayload),
+      );
+
+      const captured = getCapturedPagesFromBridge(document);
+      expect(captured.length).toBe(22);
+      expect(captured[0].pageNumber).toBe(1);
+      expect(captured[21].pageNumber).toBe(22);
+      expect(captured[0].src).toContain("page_01.webp");
+      expect(captured[21].src).toContain("page_22.webp");
+
+      document.documentElement.removeAttribute("data-lmt-captured-pages");
+    });
+
+    it("M1.4.3 Test 2: Clean chapter identity separation distinguishes chapter number '54' from internal API ID '3196390'", () => {
+      const script = document.createElement("script");
+      script.id = "initial-data";
+      script.type = "application/json";
+      script.textContent = JSON.stringify({
+        chapterId: 3196390,
+        chapterNumber: 54,
+        title: "Zipang",
+      });
+      document.body.appendChild(script);
+
+      const identity = extractChapterIdentity(document);
+      expect(identity.seriesName).toBe("Zipang");
+      expect(identity.chapterId).toBe("54");
+      expect(identity.chapterInternalId).toBe("3196390");
+      expect(identity.chapterTitle).toBe("Zipang · Ch.54");
+
+      document.body.removeChild(script);
+    });
+
+    it("M1.4.3 Test 3: Progressive discovery yields all 22 pages with exact order and attaches mounted DOM images where present", async () => {
+      const capturedPayload = Array.from({ length: 22 }, (_, i) => ({
+        index: i,
+        pageNumber: i + 1,
+        url: `https://img.comix.to/zipang-54/p${i + 1}.webp`,
+        width: 800,
+        height: 1200,
+      }));
+      document.documentElement.setAttribute(
+        "data-lmt-captured-pages",
+        JSON.stringify(capturedPayload),
+      );
+
+      // Mount only first 8 pages (simulating Comix.to viewport mounting in background tab)
+      for (let i = 1; i <= 8; i++) {
+        const div = document.createElement("div");
+        div.className = "rpage-page";
+        div.setAttribute("data-page", String(i));
+        const img = document.createElement("img");
+        img.className = "rpage-page__img";
+        img.src = `https://img.comix.to/zipang-54/p${i}.webp`;
+        img.width = 800;
+        img.height = 1200;
+        div.appendChild(img);
+        document.body.appendChild(div);
+      }
+
+      // Pages 9 to 22 exist in DOM as loaders without <img>
+      for (let i = 9; i <= 22; i++) {
+        const div = document.createElement("div");
+        div.className = "rpage-page";
+        div.setAttribute("data-page", String(i));
+        const loader = document.createElement("div");
+        loader.className = "rpage-page__loader";
+        div.appendChild(loader);
+        document.body.appendChild(div);
+      }
+
+      const discovery = await discoverChapterImagesProgressive(null);
+      expect(discovery.expectedCount).toBe(22);
+      expect(discovery.discoveredCount).toBe(22);
+      expect(discovery.pages.length).toBe(22);
+      expect(discovery.usableAssetCount).toBe(8); // Initially only 8 mounted in DOM
+
+      // Verify strict pageNumber ordering 1..22
+      for (let i = 0; i < 22; i++) {
+        expect(discovery.pages[i].pageNumber).toBe(i + 1);
+        expect(discovery.pages[i].pageIndex).toBe(i);
+        if (i < 8) {
+          expect(discovery.pages[i].isMounted).toBe(true);
+          expect(discovery.pages[i].element).toBeDefined();
+        } else {
+          expect(discovery.pages[i].isMounted).toBe(false);
+          expect(discovery.pages[i].element).toBeUndefined();
+        }
+      }
+
+      document.documentElement.removeAttribute("data-lmt-captured-pages");
+    });
+
+    it("M1.4.3 Test 4: Decoupled asset acquisition fetches and persists detached manga pages to IndexedDB", async () => {
+      const pageItem: any = {
+        pageNumber: 9,
+        pageIndex: 8,
+        src: "https://img.comix.to/zipang-54/p9.webp",
+        srcKey: "https://img.comix.to/zipang-54/p9.webp",
+        isMounted: false,
+        isUsableAsset: false,
+      };
+
+      const result = await acquirePageAsset(pageItem, "zipang__54");
+      expect(result.success).toBe(true);
+      expect(result.byteLength).toBe(68);
+      expect(result.width).toBe(800);
+      expect(result.height).toBe(1200);
+
+      expect(pageItem.isAcquired).toBe(true);
+      expect(pageItem.isUsableAsset).toBe(true);
+
+      const stored = await getPageRecord("zipang__54", 8);
+      expect(stored).not.toBeNull();
+      expect(stored?.status).toBe("acquired");
+      expect(stored?.originalDataUrl).toBe(VALID_1PX_PNG_DATAURL);
+      expect(stored?.byteLength).toBe(68);
+    });
+
+    it("M1.4.3 Test 5: Queue does not hang on detached pages during start() and settles truthfully", async () => {
+      // 1 mounted image in DOM
+      const img1 = document.createElement("img") as HTMLImageElement;
+      img1.src = "https://img.comix.to/zipang-54/mounted.jpg";
+      img1.width = 800;
+      img1.height = 1200;
+      document.body.appendChild(img1);
+
+      // Captured bridge with 1 mounted page and 1 detached page
+      const capturedPayload = [
+        {
+          index: 0,
+          pageNumber: 1,
+          url: "https://img.comix.to/zipang-54/mounted.jpg",
+          width: 800,
+          height: 1200,
+        },
+        {
+          index: 1,
+          pageNumber: 2,
+          url: "https://img.comix.to/zipang-54/detached.jpg",
+          width: 800,
+          height: 1200,
+        },
+      ];
+      document.documentElement.setAttribute(
+        "data-lmt-captured-pages",
+        JSON.stringify(capturedPayload),
+      );
+
+      const manager = new ChapterPreparationManager({
+        getActiveRule: () => null,
+        enqueueManual: (el: any) => {
+          // Simulate image finishing after being enqueued
+          setTimeout(() => {
+            Registry.setRenderedResult("https://img.comix.to/zipang-54/mounted.jpg", {
+              renderedUrl: VALID_1PX_PNG_DATAURL,
+              translations: ["สวัสดี"],
+            });
+            Registry.markDone("https://img.comix.to/zipang-54/mounted.jpg");
+          }, 20);
+        },
+      } as any);
+
+      // Start preparation: page 2 is detached from DOM so it is marked failed and removed from targetKeys
+      await manager.start({ notify: false });
+
+      // Wait for mounted page to complete
+      await new Promise((r) => setTimeout(r, 100));
+
+      const progress = manager.getProgress();
+      // Must not be hung in "preparing"
+      expect(progress.status).toBe("partial");
+      expect(progress.completed).toBe(1);
+      expect(progress.failed).toBe(1);
+      expect(progress.inFlight).toBe(0);
+
+      document.documentElement.removeAttribute("data-lmt-captured-pages");
+      manager.destroy();
+    });
+
+    it("M1.4.3 Test 6: Diagnostic mode acquires all 22 pages and reports READY_FOR_OWNER_BROWSER_ACCEPTANCE with zero inference calls", async () => {
+      const capturedPayload = Array.from({ length: 22 }, (_, i) => ({
+        index: i,
+        pageNumber: i + 1,
+        url: `https://img.comix.to/zipang-54/p${String(i + 1).padStart(2, "0")}.webp`,
+        width: 800,
+        height: 1200,
+      }));
+      document.documentElement.setAttribute(
+        "data-lmt-captured-pages",
+        JSON.stringify(capturedPayload),
+      );
+
+      const inferenceCalls: any[] = [];
+      const manager = new ChapterPreparationManager({
+        getActiveRule: () => null,
+        enqueueManual: (el: any) => inferenceCalls.push(el),
+      } as any);
+
+      const diag = await manager.runDiagnostic();
+
+      expect(inferenceCalls.length).toBe(0); // ZERO Gemini API calls!
+      expect(diag.expectedCount).toBe(22);
+      expect(diag.discoveredCount).toBe(22);
+      expect(diag.acquiredCount).toBe(22);
+      expect(diag.persistedCount).toBe(22);
+      expect(diag.missingPageNumbers).toEqual([]);
+      expect(diag.verdict).toBe("READY_FOR_OWNER_BROWSER_ACCEPTANCE");
+
+      const jsonStr = manager.exportDiagnosticJson(diag);
+      expect(jsonStr).toContain('"verdict": "READY_FOR_OWNER_BROWSER_ACCEPTANCE"');
+      expect(jsonStr).toContain('"discoveredCount": 22');
+
+      document.documentElement.removeAttribute("data-lmt-captured-pages");
       manager.destroy();
     });
   });

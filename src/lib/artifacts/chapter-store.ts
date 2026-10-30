@@ -14,6 +14,9 @@ export interface StoredChapter {
   updatedAt: number;
   expectedCount: number;
   discoveredCount: number;
+  usableAssetCount?: number;
+  acquiredCount?: number;
+  mountedCount?: number;
   fetchedCount: number;
   verifiedCount: number;
   status: "idle" | "preparing" | "ready" | "partial" | "failed";
@@ -29,11 +32,16 @@ export interface StoredPage {
   pageNumber: number; // 1-based (001, 002...)
   src: string;
   mimeType: string;
+  originalDataUrl?: string;
   renderedDataUrl?: string;
+  width?: number;
+  height?: number;
+  hash?: string;
+  byteLength?: number;
   translations: string[];
   sourceTexts?: string[];
   verified: boolean;
-  status: "pending" | "done" | "failed";
+  status: "pending" | "acquired" | "done" | "failed";
   updatedAt: number;
 }
 

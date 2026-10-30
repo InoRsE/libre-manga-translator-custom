@@ -54,5 +54,172 @@ export default defineContentScript({
     } catch {
       // Never break page execution
     }
+
+    // ── M1.4.3: Reader Chapter Page List Bridge (Comix.to & Encrypted Readers) ──
+    // Runs at document_start in MAIN world. Hook TextDecoder and atob to capture
+    // decrypted chapter manifests the moment they arrive, without requiring DOM
+    // elements to be mounted on screen or user scrolling.
+    try {
+      const isComix =
+        typeof window !== "undefined" &&
+        (window.location.hostname.includes("comix.to") ||
+          window.location.hostname.includes("comix.ws"));
+
+      if (isComix) {
+        // Prevent background tab throttling by keeping visibility visible
+        try {
+          Object.defineProperty(document, "hidden", {
+            configurable: true,
+            get: () => false,
+          });
+          Object.defineProperty(document, "visibilityState", {
+            configurable: true,
+            get: () => "visible",
+          });
+        } catch {}
+      }
+
+      let capturedPages: Array<{
+        src: string;
+        pageNumber: number;
+        pageIndex: number;
+        width?: number;
+        height?: number;
+      }> | null = null;
+
+      const publishCapturedPages = (
+        pages: Array<{
+          src: string;
+          pageNumber: number;
+          pageIndex: number;
+          width?: number;
+          height?: number;
+        }>,
+      ) => {
+        capturedPages = pages;
+        try {
+          (window as any).__lmt_captured_pages = pages;
+          document.documentElement?.setAttribute(
+            "data-lmt-captured-pages",
+            JSON.stringify(pages),
+          );
+          window.dispatchEvent(
+            new CustomEvent("lmt:pages-captured", { detail: { pages } }),
+          );
+        } catch {}
+      };
+
+      const tryCapture = (s: any) => {
+        if (
+          capturedPages ||
+          typeof s !== "string" ||
+          s.length < 50 ||
+          (s.indexOf('"pages"') === -1 &&
+            s.indexOf('"hL"') === -1 &&
+            s.indexOf('"items"') === -1)
+        ) {
+          return;
+        }
+
+        try {
+          const j = JSON.parse(s);
+          const r = (j && j.result) || j;
+          const p = r && (r.pages || r.hL || r.items || r.images);
+          let items: any[] | null = null;
+          let baseUrl = "";
+
+          if (p && Array.isArray(p.items)) {
+            items = p.items;
+            baseUrl = p.baseUrl || "";
+          } else if (p && Array.isArray(p)) {
+            items = p;
+            baseUrl = (r.pages && r.pages.baseUrl) || r.baseUrl || "";
+          } else if (Array.isArray(r)) {
+            items = r;
+          }
+
+          if (!items || !items.length) return;
+
+          const out: Array<{
+            src: string;
+            pageNumber: number;
+            pageIndex: number;
+            width?: number;
+            height?: number;
+          }> = [];
+
+          for (let i = 0; i < items.length; i++) {
+            const it = items[i];
+            if (!it) continue;
+            const u =
+              it.url ||
+              it.Bn ||
+              it.src ||
+              it.image ||
+              (typeof it === "string" ? it : null);
+            if (typeof u === "string" && u) {
+              const fullSrc = /^https?:/i.test(u) ? u : baseUrl + u;
+              out.push({
+                src: fullSrc,
+                pageNumber: i + 1,
+                pageIndex: i,
+                width: it.vx || it.width || 0,
+                height: it.fG || it.height || 0,
+              });
+            }
+          }
+
+          if (out.length > 0) {
+            publishCapturedPages(out);
+            restoreDecoders();
+          }
+        } catch {}
+      };
+
+      const TD = window.TextDecoder && window.TextDecoder.prototype;
+      const nativeDecode = TD && TD.decode;
+      const nativeAtob = window.atob;
+      let decodeHook: any;
+      let atobHook: any;
+
+      function restoreDecoders() {
+        try {
+          if (TD && TD.decode === decodeHook) TD.decode = nativeDecode;
+          if (window.atob === atobHook) window.atob = nativeAtob;
+        } catch {}
+      }
+
+      if (TD && TD.decode) {
+        const orig = TD.decode;
+        decodeHook = function (this: any) {
+          const r = orig.apply(this, arguments as any);
+          try {
+            tryCapture(r);
+          } catch {}
+          return r;
+        };
+        TD.decode = decodeHook;
+      }
+
+      if (typeof window.atob === "function") {
+        const oa = window.atob;
+        atobHook = function (this: any) {
+          const r = oa.apply(this, arguments as any);
+          try {
+            tryCapture(r);
+          } catch {}
+          return r;
+        };
+        window.atob = atobHook;
+      }
+
+      window.addEventListener("lmt:request-captured-pages", () => {
+        if (capturedPages) {
+          publishCapturedPages(capturedPages);
+        }
+      });
+    } catch {
+      // Never break page execution
+    }
   },
 });

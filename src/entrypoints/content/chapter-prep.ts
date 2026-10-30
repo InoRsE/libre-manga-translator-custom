@@ -12,9 +12,11 @@ import {
   saveChapterRecord,
   getChapterRecord,
   savePageRecord,
+  getPageRecord,
   getChapterPages,
   markChapterExported,
   generateChapterKey,
+  generatePageKey,
   type StoredChapter,
   type StoredPage,
 } from "@/lib/artifacts/chapter-store";
@@ -43,6 +45,16 @@ export type ChapterDownloadState =
   | "download_completed"
   | "download_failed";
 
+export type CollectorVerdict =
+  | "COLLECTOR_LIVE_VERIFIED"
+  | "READY_FOR_OWNER_BROWSER_ACCEPTANCE"
+  | "COLLECTOR_PARTIAL_WITH_BLOCKERS"
+  | "BLOCKED_ARCHITECTURE"
+  | "ELIGIBLE_FOR_PROCESSING"
+  | "INCOMPLETE_DISCOVERY"
+  | "UNKNOWN_EXPECTED_COUNT"
+  | "DETACHED_ASSETS";
+
 export interface ChapterPageItem {
   pageNumber: number; // 1-based (1, 2, ... 22)
   pageIndex: number;  // 0-based
@@ -51,15 +63,24 @@ export interface ChapterPageItem {
   element?: MangaTargetElement;
   isMounted: boolean;
   isUsableAsset: boolean;
+  isAcquired?: boolean;
+  width?: number;
+  height?: number;
+  byteLength?: number;
+  hash?: string;
 }
 
 export interface ChapterDiagnosticResult {
   seriesName: string;
   chapterId: string;
+  chapterInternalId?: string;
   chapterTitle: string;
   url: string;
   expectedCount: number; // 0 if unknown
   discoveredCount: number;
+  mountedCount?: number;
+  acquiredCount?: number;
+  persistedCount?: number;
   usableAssetCount: number;
   missingPageNumbers: number[];
   pages: Array<{
@@ -67,15 +88,17 @@ export interface ChapterDiagnosticResult {
     pageIndex: number;
     src: string;
     isMounted: boolean;
+    isAcquired?: boolean;
     isUsableAsset: boolean;
     hasCachedTranslation: boolean;
+    width?: number;
+    height?: number;
+    byteLength?: number;
+    hash?: string;
   }>;
-  verdict:
-    | "ELIGIBLE_FOR_PROCESSING"
-    | "INCOMPLETE_DISCOVERY"
-    | "UNKNOWN_EXPECTED_COUNT"
-    | "DETACHED_ASSETS";
+  verdict: CollectorVerdict;
   message: string;
+  timestamp?: number;
 }
 
 export interface ChapterPrepProgress {
@@ -97,6 +120,280 @@ export interface ChapterPrepProgress {
   elapsedSeconds?: number;
   exportStatus?: "not_exported" | "exported";
   exportedFilename?: string;
+}
+
+/**
+ * Reads captured chapter pages intercepted at document_start in the MAIN world
+ * from Comix.to / Next.js encrypted chapter payload decoders.
+ */
+export function getCapturedPagesFromBridge(doc: Document = document): Array<{
+  pageNumber: number;
+  pageIndex: number;
+  src: string;
+  width?: number;
+  height?: number;
+}> {
+  try {
+    const raw = doc.documentElement?.getAttribute("data-lmt-captured-pages");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((item, idx) => ({
+          pageNumber: item.pageNumber ?? (item.index !== undefined ? item.index + 1 : idx + 1),
+          pageIndex: item.index ?? (item.pageNumber ? item.pageNumber - 1 : idx),
+          src: item.url,
+          width: item.width,
+          height: item.height,
+        }));
+      }
+    }
+  } catch {}
+
+  if (typeof window !== "undefined") {
+    const winPages = (window as any).__lmt_captured_pages;
+    if (Array.isArray(winPages) && winPages.length > 0) {
+      return winPages.map((item, idx) => ({
+        pageNumber: item.pageNumber ?? (item.index !== undefined ? item.index + 1 : idx + 1),
+        pageIndex: item.index ?? (item.pageNumber ? item.pageNumber - 1 : idx),
+        src: item.url,
+        width: item.width,
+        height: item.height,
+      }));
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Extracts clean chapter identity (series title, clean chapter number, internal ID, display title)
+ * strictly distinguishing user-visible chapter "54" from internal API ID "3196390".
+ */
+export function extractChapterIdentity(doc: Document = document): {
+  seriesName: string;
+  chapterId: string;
+  chapterInternalId?: string;
+  chapterTitle: string;
+} {
+  let seriesName = "MANGA";
+  let chapterId = "001";
+  let chapterInternalId: string | undefined = undefined;
+
+  // 1. Inspect Comix.to / Next.js #initial-data JSON
+  try {
+    const initEl = doc.getElementById("initial-data");
+    if (initEl?.textContent) {
+      const parsed = JSON.parse(initEl.textContent);
+      if (parsed.chapterNumber !== undefined && parsed.chapterNumber !== null) {
+        chapterId = String(parsed.chapterNumber);
+      }
+      if (parsed.chapterId) {
+        chapterInternalId = String(parsed.chapterId);
+      }
+      if (parsed.title || parsed.mangaTitle || parsed.seriesTitle) {
+        seriesName = parsed.title || parsed.mangaTitle || parsed.seriesTitle;
+      }
+    }
+  } catch {}
+
+  // 2. Fall back to title regex: e.g. "Zipang · Ch.54" or "Zipang - Chapter 54"
+  const titleText = doc.title || "";
+  const titleMatch = titleText.match(/^(.*?)\s*(?:·|-|–|—)\s*Ch(?:apter)?\.?\s*([\d.]+)/i);
+  if (titleMatch) {
+    if (seriesName === "MANGA" && titleMatch[1]?.trim()) {
+      seriesName = titleMatch[1].trim();
+    }
+    if (chapterId === "001" && titleMatch[2]?.trim()) {
+      chapterId = titleMatch[2].trim();
+    }
+  }
+
+  // 3. Fall back to URL pattern: e.g. /title/gqwx-zipang/3196390-chapter-54
+  if (typeof location !== "undefined" && (seriesName === "MANGA" || chapterId === "001")) {
+    const pathname = location.pathname;
+    const chMatch = pathname.match(/(?:-chapter-|·\s*Ch\.)([\d.]+)/i);
+    if (chapterId === "001" && chMatch?.[1]) {
+      chapterId = chMatch[1];
+    }
+    const seriesMatch = pathname.match(/\/title\/[a-z0-9]+-([^\/]+)/i);
+    if (seriesName === "MANGA" && seriesMatch?.[1]) {
+      seriesName = seriesMatch[1]
+        .replace(/[-_]/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+    const idMatch = pathname.match(/\/(\d+)-chapter-/i);
+    if (!chapterInternalId && idMatch?.[1]) {
+      chapterInternalId = idMatch[1];
+    }
+  }
+
+  const chapterTitle = `${seriesName} · Ch.${chapterId}`;
+  return { seriesName, chapterId, chapterInternalId, chapterTitle };
+}
+
+/**
+ * Acquires a chapter page's binary asset independently of DOM mounting or virtualization,
+ * verifies its dimensions and SHA-256 hash, and durably persists it in IndexedDB.
+ */
+export async function acquirePageAsset(
+  page: ChapterPageItem,
+  chapterKey: string,
+  referer?: string,
+): Promise<{
+  success: boolean;
+  byteLength?: number;
+  width?: number;
+  height?: number;
+  hash?: string;
+  error?: string;
+}> {
+  // Check if already persisted with valid image data
+  try {
+    const existing = await getPageRecord(chapterKey, page.pageIndex);
+    if (existing?.originalDataUrl || existing?.renderedDataUrl) {
+      page.isAcquired = true;
+      page.isUsableAsset = true;
+      page.width = existing.width;
+      page.height = existing.height;
+      page.byteLength = existing.byteLength;
+      page.hash = existing.hash;
+      return {
+        success: true,
+        byteLength: existing.byteLength,
+        width: existing.width,
+        height: existing.height,
+        hash: existing.hash,
+      };
+    }
+  } catch {}
+
+  // Fetch via background proxy
+  try {
+    if (typeof browser === "undefined" || !browser.runtime?.sendMessage) {
+      return { success: false, error: "Browser runtime messaging unavailable" };
+    }
+
+    const ref =
+      referer ||
+      (typeof window !== "undefined" ? window.location.href : "https://comix.to/");
+    const res = await browser.runtime.sendMessage({
+      type: "FETCH_CHAPTER_PAGE_IMAGE",
+      data: {
+        url: page.src,
+        referer: ref,
+      },
+    });
+
+    if (!res?.success || !res?.dataUrl) {
+      return {
+        success: false,
+        error: res?.error || "Background page image fetch failed",
+      };
+    }
+
+    await savePageRecord({
+      id: generatePageKey(chapterKey, page.pageIndex),
+      chapterKey,
+      pageIndex: page.pageIndex,
+      pageNumber: page.pageNumber,
+      src: page.src,
+      mimeType: res.mimeType || "image/jpeg",
+      originalDataUrl: res.dataUrl,
+      width: res.width,
+      height: res.height,
+      hash: res.hash,
+      byteLength: res.byteLength,
+      translations: [],
+      verified: false,
+      status: "acquired",
+      updatedAt: Date.now(),
+    });
+
+    page.isAcquired = true;
+    page.isUsableAsset = true;
+    page.width = res.width;
+    page.height = res.height;
+    page.byteLength = res.byteLength;
+    page.hash = res.hash;
+
+    return {
+      success: true,
+      byteLength: res.byteLength,
+      width: res.width,
+      height: res.height,
+      hash: res.hash,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || String(err),
+    };
+  }
+}
+
+/**
+ * Concurrently acquires binary assets for an entire chapter's page list.
+ */
+export async function acquireChapterAssets(
+  pages: ChapterPageItem[],
+  chapterKey: string,
+  concurrency = 3,
+  onProgress?: (acquired: number, total: number) => void,
+): Promise<{
+  total: number;
+  acquired: number;
+  failed: number;
+  results: Array<{
+    pageNumber: number;
+    success: boolean;
+    byteLength?: number;
+    error?: string;
+  }>;
+}> {
+  const results: Array<{
+    pageNumber: number;
+    success: boolean;
+    byteLength?: number;
+    error?: string;
+  }> = [];
+  let acquiredCount = 0;
+  let failedCount = 0;
+
+  const queue = [...pages];
+  const workers = Array.from(
+    { length: Math.min(concurrency, Math.max(1, queue.length)) },
+    async () => {
+      while (queue.length > 0) {
+        const page = queue.shift();
+        if (!page) break;
+        const res = await acquirePageAsset(page, chapterKey);
+        if (res.success) {
+          acquiredCount++;
+          results.push({
+            pageNumber: page.pageNumber,
+            success: true,
+            byteLength: res.byteLength,
+          });
+        } else {
+          failedCount++;
+          results.push({
+            pageNumber: page.pageNumber,
+            success: false,
+            error: res.error,
+          });
+        }
+        onProgress?.(acquiredCount, pages.length);
+      }
+    },
+  );
+
+  await Promise.all(workers);
+  return {
+    total: pages.length,
+    acquired: acquiredCount,
+    failed: failedCount,
+    results,
+  };
 }
 
 /**
@@ -192,6 +489,12 @@ export function extractExpectedPageCount(
   doc: Document = document,
   activeRule?: SiteRule | null,
 ): number | undefined {
+  // 0. Captured pages from bridge (M1.4.3)
+  const captured = getCapturedPagesFromBridge(doc);
+  if (captured.length > 0) {
+    return captured.length;
+  }
+
   // 1. Next.js reader state (e.g. comix.to, Next.js manga readers)
   const nextDataEl = doc.getElementById("__NEXT_DATA__");
   if (nextDataEl?.textContent) {
@@ -213,6 +516,19 @@ export function extractExpectedPageCount(
       };
       const found = findCount(data);
       if (found) return found;
+    } catch {}
+  }
+
+  // 1b. Reader initial-data script (Comix.to Next.js / TanStack format)
+  const initialDataEl = doc.getElementById("initial-data");
+  if (initialDataEl?.textContent) {
+    try {
+      const data = JSON.parse(initialDataEl.textContent);
+      if (Array.isArray(data.pages) && data.pages.length > 0) return data.pages.length;
+      if (Array.isArray(data.images) && data.images.length > 0) return data.images.length;
+      if (typeof data.totalPages === "number" && data.totalPages > 0) return data.totalPages;
+      if (typeof data.total_pages === "number" && data.total_pages > 0) return data.total_pages;
+      if (typeof data.pageCount === "number" && data.pageCount > 0) return data.pageCount;
     } catch {}
   }
 
@@ -380,13 +696,80 @@ export async function discoverChapterImagesProgressive(
   discoveredCount: number;
   usableAssetCount: number;
 }> {
-  const detectedExpected =
-    options?.expectedCount ?? extractExpectedPageCount(document, activeRule);
+  const doc = typeof document !== "undefined" ? document : undefined;
+  const capturedBridgePages = doc ? getCapturedPagesFromBridge(doc) : [];
+
+  let detectedExpected =
+    options?.expectedCount ?? (doc ? extractExpectedPageCount(doc, activeRule) : undefined);
+
+  if ((!detectedExpected || detectedExpected <= 0) && capturedBridgePages.length > 0) {
+    detectedExpected = capturedBridgePages.length;
+  }
 
   // M1.4.2 REPAIR 3: Never infer expectedCount from discoveredCount when unknown.
   // If metadata doesn't specify expected page count, expectedCount remains 0 (unknown).
   const expectedCount =
     detectedExpected && detectedExpected > 0 ? detectedExpected : 0;
+
+  // Case A: Bridge captured page descriptors directly from reader decoders (M1.4.3)
+  if (capturedBridgePages.length > 0) {
+    capturedBridgePages.sort((a, b) => a.pageNumber - b.pageNumber);
+
+    const pages: ChapterPageItem[] = capturedBridgePages.map((item) => {
+      let mountedImg: MangaTargetElement | undefined = undefined;
+      if (doc) {
+        const pageContainer = doc.querySelector(`[data-page="${item.pageNumber}"]`);
+        if (pageContainer) {
+          const imgInside = pageContainer.querySelector<MangaTargetElement>("img, canvas");
+          if (imgInside && isCandidateMangaImage(imgInside, activeRule)) {
+            mountedImg = imgInside;
+          }
+        }
+        if (!mountedImg) {
+          mountedImg = findMountedImage(item.src) ?? undefined;
+        }
+      }
+
+      const isMounted = mountedImg !== undefined && doc?.body?.contains(mountedImg) === true;
+      const naturalW = mountedImg
+        ? "naturalWidth" in mountedImg
+          ? mountedImg.naturalWidth
+          : mountedImg.width
+        : item.width ?? 0;
+      const naturalH = mountedImg
+        ? "naturalHeight" in mountedImg
+          ? mountedImg.naturalHeight
+          : mountedImg.height
+        : item.height ?? 0;
+
+      const isUsableAsset = isMounted && (naturalW > 0 || naturalH > 0);
+
+      return {
+        pageNumber: item.pageNumber,
+        pageIndex: item.pageIndex,
+        src: item.src,
+        srcKey: Registry.srcKeyOf(item.src),
+        element: isMounted ? mountedImg : undefined,
+        isMounted,
+        isUsableAsset,
+        width: naturalW > 0 ? naturalW : undefined,
+        height: naturalH > 0 ? naturalH : undefined,
+      };
+    });
+
+    const usableAssetCount = pages.filter((p) => p.isUsableAsset).length;
+    const finalImages = pages
+      .map((p) => p.element)
+      .filter((el): el is MangaTargetElement => !!el);
+
+    return {
+      images: finalImages,
+      pages,
+      expectedCount: expectedCount > 0 ? expectedCount : pages.length,
+      discoveredCount: pages.length,
+      usableAssetCount,
+    };
+  }
 
   // Accumulate pages across all scroll steps to prevent virtualized unmount loss
   const accumulatedMap = new Map<
@@ -1054,14 +1437,11 @@ export class ChapterPreparationManager {
       this.orchestrator.getActiveRule() ?? (await resolveActiveSiteRule());
 
     try {
-      const siteRule = await getSiteRule();
-      this.seriesName = siteRule.seriesName || "MANGA";
-      this.chapterId = siteRule.chapterId || "001";
+      const identity = extractChapterIdentity(document);
+      this.seriesName = identity.seriesName || "MANGA";
+      this.chapterId = identity.chapterId || "001";
       this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
-      this.chapterTitle =
-        siteRule.seriesName && siteRule.chapterId
-          ? `${siteRule.seriesName} · Ch.${siteRule.chapterId}`
-          : document.title;
+      this.chapterTitle = identity.chapterTitle || document.title;
     } catch {
       this.seriesName = "MANGA";
       this.chapterId = "001";
@@ -1137,12 +1517,13 @@ export class ChapterPreparationManager {
           ) {
             pendingImages.push(liveImg);
           } else {
-            // M1.4.2 REPAIR 2: Never treat a detached DOM reference as a usable page asset.
-            // Mark failed explicitly so it does not hang in queue!
+            // M1.4.2 REPAIR 2 & M1.4.3 REPAIR D: Never treat a detached DOM reference as a usable page asset.
+            // Mark failed explicitly and delete from targetKeys so it does not hang in queue!
             console.warn(
               `[LMT Chapter Prep] Page ${pageItem.pageNumber} (${pageItem.src}) is detached from DOM; marking failed.`,
             );
             this.failedKeys.add(k);
+            this.targetKeys.delete(k);
           }
         }
       }
@@ -1221,21 +1602,22 @@ export class ChapterPreparationManager {
 
   /**
    * Collector-only diagnostic mode for evaluating chapter collection without invoking Gemini API.
-   * Reports expected count, discovered count, usable assets, page order, and missing pages.
+   * Reports expected count, discovered count, mounted count, acquired count, persisted count,
+   * usable assets, page order, and missing pages.
    */
-  async runDiagnostic(): Promise<ChapterDiagnosticResult> {
+  async runDiagnostic(options?: {
+    acquireAssets?: boolean;
+  }): Promise<ChapterDiagnosticResult> {
     const activeRule =
       this.orchestrator.getActiveRule() ?? (await resolveActiveSiteRule());
 
     try {
-      const siteRule = await getSiteRule();
-      this.seriesName = siteRule.seriesName || this.seriesName || "MANGA";
-      this.chapterId = siteRule.chapterId || this.chapterId || "001";
+      const identity = extractChapterIdentity(document);
+      this.seriesName = identity.seriesName || this.seriesName || "MANGA";
+      this.chapterId = identity.chapterId || this.chapterId || "001";
       this.chapterKey = generateChapterKey(this.seriesName, this.chapterId);
       this.chapterTitle =
-        siteRule.seriesName && siteRule.chapterId
-          ? `${siteRule.seriesName} · Ch.${siteRule.chapterId}`
-          : document.title;
+        identity.chapterTitle || this.chapterTitle || document.title;
     } catch {
       this.seriesName = "MANGA";
       this.chapterId = "001";
@@ -1244,30 +1626,65 @@ export class ChapterPreparationManager {
     }
 
     const discovery = await discoverChapterImagesProgressive(activeRule);
+    this.expectedCount = discovery.expectedCount;
+    this.discovered = discovery.discoveredCount;
+    this.orderedPages = discovery.pages;
+
+    // Decoupled asset acquisition (ZERO Gemini API calls!)
+    const shouldAcquire = options?.acquireAssets ?? true;
+    if (
+      shouldAcquire &&
+      discovery.pages.length > 0 &&
+      typeof browser !== "undefined" &&
+      typeof browser.runtime?.sendMessage === "function"
+    ) {
+      try {
+        await acquireChapterAssets(discovery.pages, this.chapterKey);
+      } catch (e) {
+        console.warn("[LMT Chapter Diagnostic] Asset acquisition encountered warning:", e);
+      }
+    }
+
     const storedPages = await getChapterPages(this.chapterKey);
 
     const pagesInfo = discovery.pages.map((p) => {
       const isMounted = p.element
         ? typeof document !== "undefined" && document.body?.contains(p.element)
         : findMountedImage(p.src) !== null;
-      const isStoredDone = storedPages.some(
+      const stored = storedPages.find(
         (sp) =>
-          (sp.src === p.src || sp.src === p.srcKey) &&
-          sp.status === "done" &&
-          sp.verified,
+          sp.pageIndex === p.pageIndex ||
+          sp.src === p.src ||
+          sp.src === p.srcKey,
       );
+      const isAcquired = !!(
+        stored?.originalDataUrl ||
+        stored?.renderedDataUrl ||
+        p.isAcquired
+      );
+      const isStoredDone = stored?.status === "done" && stored.verified;
+      const isUsableAsset = isMounted || isAcquired;
+
       return {
         pageNumber: p.pageNumber,
         pageIndex: p.pageIndex,
         src: p.src,
         isMounted,
-        isUsableAsset: isMounted,
+        isAcquired,
+        isUsableAsset,
         hasCachedTranslation: isStoredDone,
+        width: stored?.width ?? p.width,
+        height: stored?.height ?? p.height,
+        byteLength: stored?.byteLength ?? p.byteLength,
+        hash: stored?.hash ?? p.hash,
       };
     });
 
     const expectedCount = discovery.expectedCount;
     const discoveredCount = discovery.discoveredCount;
+    const mountedCount = pagesInfo.filter((p) => p.isMounted).length;
+    const acquiredCount = pagesInfo.filter((p) => p.isAcquired).length;
+    const persistedCount = storedPages.length;
     const usableAssetCount = pagesInfo.filter((p) => p.isUsableAsset).length;
 
     // Determine missing page numbers
@@ -1281,8 +1698,8 @@ export class ChapterPreparationManager {
       }
     }
 
-    let verdict: ChapterDiagnosticResult["verdict"] = "ELIGIBLE_FOR_PROCESSING";
-    let message = `All ${expectedCount} expected pages discovered with usable assets in correct order.`;
+    let verdict: CollectorVerdict = "READY_FOR_OWNER_BROWSER_ACCEPTANCE";
+    let message = `All ${expectedCount} expected pages discovered, acquired, and persisted in correct order without DOM dependency.`;
 
     if (expectedCount <= 0) {
       verdict = "UNKNOWN_EXPECTED_COUNT";
@@ -1290,38 +1707,49 @@ export class ChapterPreparationManager {
     } else if (discoveredCount < expectedCount) {
       verdict = "INCOMPLETE_DISCOVERY";
       message = `Incomplete discovery: found ${discoveredCount} of ${expectedCount} pages (missing pages: ${missingPageNumbers.join(", ")}).`;
-    } else if (usableAssetCount < discoveredCount) {
+    } else if (acquiredCount < expectedCount && mountedCount < expectedCount) {
       verdict = "DETACHED_ASSETS";
-      message = `${discoveredCount - usableAssetCount} of ${discoveredCount} pages are currently detached from DOM (virtualized reader).`;
+      message = `${discoveredCount - mountedCount} of ${discoveredCount} pages are currently detached from DOM and not yet acquired.`;
     }
 
+    const identity = extractChapterIdentity(document);
     const result: ChapterDiagnosticResult = {
       seriesName: this.seriesName,
       chapterId: this.chapterId,
+      chapterInternalId: identity.chapterInternalId,
       chapterTitle: this.chapterTitle,
       url: typeof window !== "undefined" ? window.location.href : "",
       expectedCount,
       discoveredCount,
+      mountedCount,
+      acquiredCount,
+      persistedCount,
       usableAssetCount,
       missingPageNumbers,
       pages: pagesInfo,
       verdict,
       message,
+      timestamp: Date.now(),
     };
 
     console.group(`[LMT Chapter Diagnostic] ${this.chapterTitle || "Chapter"}`);
     console.info(
-      `Expected: ${expectedCount || "UNKNOWN"} | Discovered: ${discoveredCount} | Usable Assets: ${usableAssetCount} | Verdict: ${verdict}`,
+      `Expected: ${expectedCount || "UNKNOWN"} | Discovered: ${discoveredCount} | Mounted: ${mountedCount} | Acquired: ${acquiredCount} | Persisted: ${persistedCount} | Verdict: ${verdict}`,
     );
     if (typeof console.table === "function") {
       console.table(
         pagesInfo.map((p) => ({
           "Page #": p.pageNumber,
-          Mounted: p.isMounted ? "YES" : "NO (detached)",
+          Mounted: p.isMounted ? "YES" : "NO",
+          Acquired: p.isAcquired ? "YES" : "NO",
           Usable: p.isUsableAsset ? "YES" : "NO",
-          Cached: p.hasCachedTranslation ? "YES" : "NO",
+          Dimensions:
+            p.width && p.height ? `${p.width}x${p.height}` : "—",
+          Bytes: p.byteLength
+            ? `${Math.round(p.byteLength / 1024)} KB`
+            : "—",
           "Source URL":
-            p.src.length > 60 ? p.src.substring(0, 57) + "..." : p.src,
+            p.src.length > 50 ? p.src.substring(0, 47) + "..." : p.src,
         })),
       );
     }
@@ -1336,6 +1764,11 @@ export class ChapterPreparationManager {
     }
 
     return result;
+  }
+
+  exportDiagnosticJson(diag?: ChapterDiagnosticResult): string {
+    const data = diag || this.getProgress();
+    return JSON.stringify(data, null, 2);
   }
 
   getProgress(): ChapterPrepProgress {

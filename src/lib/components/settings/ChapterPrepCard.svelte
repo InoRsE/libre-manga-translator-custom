@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { BookOpen, CheckCircle, AlertTriangle, XCircle, Loader2, Square, Sparkles, Bell, Wrench } from "lucide-svelte";
+  import { BookOpen, CheckCircle, AlertTriangle, XCircle, Loader2, Square, Sparkles, Bell, Wrench, Copy, Check } from "lucide-svelte";
   import type { ChapterPrepProgress, ChapterDiagnosticResult } from "@/entrypoints/content/chapter-prep";
   import { onMount, onDestroy } from "svelte";
 
@@ -17,6 +17,18 @@
   let showDiagnosticDetails = $state(false);
   let isDiagnosing = $state(false);
   let notifyOnComplete = $state(true);
+  let copiedJson = $state(false);
+
+  async function copyDiagnosticJson() {
+    if (!diagnostic) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(diagnostic, null, 2));
+      copiedJson = true;
+      setTimeout(() => (copiedJson = false), 2000);
+    } catch (err) {
+      console.warn("Failed to copy diagnostic JSON:", err);
+    }
+  }
 
   function handleProgressEvent(e: Event) {
     const detail = (e as CustomEvent<ChapterPrepProgress>).detail;
@@ -247,7 +259,7 @@
         <div class="flex items-center justify-between font-mono">
           <span class="text-[var(--text-dim)]">Verdict:</span>
           <span
-            class="font-semibold px-1.5 py-0.5 rounded text-[9px] {diagnostic.verdict === 'ELIGIBLE_FOR_PROCESSING'
+            class="font-semibold px-1.5 py-0.5 rounded text-[9px] {diagnostic.verdict === 'COLLECTOR_LIVE_VERIFIED' || diagnostic.verdict === 'READY_FOR_OWNER_BROWSER_ACCEPTANCE' || diagnostic.verdict === 'ELIGIBLE_FOR_PROCESSING'
               ? 'bg-emerald-500/20 text-emerald-400'
               : diagnostic.verdict === 'DETACHED_ASSETS'
                 ? 'bg-amber-500/20 text-amber-400'
@@ -257,7 +269,7 @@
           </span>
         </div>
         <div class="text-[var(--text-dim)] leading-tight">{diagnostic.message}</div>
-        <div class="grid grid-cols-3 gap-1 pt-1 border-t border-[var(--border-faint)] text-center font-mono text-[9px]">
+        <div class="grid grid-cols-5 gap-1 pt-1 border-t border-[var(--border-faint)] text-center font-mono text-[9px]">
           <div>
             <span class="text-[var(--text-dim)] block">Expected</span>
             <span class="font-semibold text-[var(--text-primary)]">{diagnostic.expectedCount || "UNKNOWN"}</span>
@@ -267,11 +279,40 @@
             <span class="font-semibold text-[var(--text-primary)]">{diagnostic.discoveredCount}</span>
           </div>
           <div>
-            <span class="text-[var(--text-dim)] block">Usable (DOM)</span>
-            <span class="font-semibold {diagnostic.usableAssetCount < diagnostic.discoveredCount ? 'text-amber-400' : 'text-emerald-400'}">
-              {diagnostic.usableAssetCount}
+            <span class="text-[var(--text-dim)] block">DOM Mounted</span>
+            <span class="font-semibold text-[var(--text-muted)]">
+              {diagnostic.mountedCount ?? diagnostic.usableAssetCount}
             </span>
           </div>
+          <div>
+            <span class="text-[var(--text-dim)] block">Acquired</span>
+            <span class="font-semibold {diagnostic.acquiredCount === diagnostic.expectedCount ? 'text-emerald-400' : 'text-amber-400'}">
+              {diagnostic.acquiredCount ?? "—"}
+            </span>
+          </div>
+          <div>
+            <span class="text-[var(--text-dim)] block">Persisted</span>
+            <span class="font-semibold text-emerald-400">
+              {diagnostic.persistedCount ?? "—"}
+            </span>
+          </div>
+        </div>
+
+        <!-- Copy Diagnostic JSON Action -->
+        <div class="pt-1 flex items-center justify-end">
+          <button
+            type="button"
+            onclick={copyDiagnosticJson}
+            class="px-2 py-1 text-[9px] font-medium rounded border border-[var(--border-faint)] bg-[var(--surface-panel-alt)] text-[var(--text-dim)] hover:text-[var(--text-primary)] hover:border-[var(--text-dim)] transition-colors flex items-center gap-1 cursor-pointer"
+          >
+            {#if copiedJson}
+              <Check size={10} class="text-emerald-400" />
+              <span class="text-emerald-400 font-semibold">Copied JSON!</span>
+            {:else}
+              <Copy size={10} />
+              <span>Copy Diagnostic JSON</span>
+            {/if}
+          </button>
         </div>
       </div>
     </div>

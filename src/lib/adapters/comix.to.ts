@@ -7,7 +7,9 @@
 // intentionally never matches and stays 0 - the page cache and
 // series-context key degrade to chapter level on this site.
 
-export default {
+import type { SiteRule } from "../adapters";
+
+const comixRule: SiteRule = {
   id: "comix",
   domain: "comix.to",
   seriesName: {
@@ -15,7 +17,7 @@ export default {
     source: "title",
   },
   chapterId: {
-    regex: "-chapter-([\\d.]+)",
+    regex: "(?:-chapter-|·\\s*Ch\\.)([\\d.]+)",
     source: "path",
   },
   pageIndex: {
@@ -23,9 +25,11 @@ export default {
     source: "path",
   },
   containerSelector: ".reader-container, #reader, .reader, #chapter-images, [data-reader], .comic-container, .comic-pages, main",
-  imageSelector: ".reader-container img, .chapter-images img, #reader img, .reader img, #chapter-images img, [data-reader] img, .comic-container img, .comic-pages img, main img",
-  pageCountSelector: "[class*='page-total'], [class*='total-pages'], [data-total-pages], select[name='page'], .pagination, [class*='pages-count'], select.page-select, [class*='counter']",
+  imageSelector: ".rpage-page__img, .reader-container img, .chapter-images img, #reader img, .reader img, #chapter-images img, [data-reader] img, .comic-container img, .comic-pages img, main img",
+  pageCountSelector: "[class*='page-total'], [class*='total-pages'], [data-total-pages], select[name='page'], .pagination, [class*='pages-count'], select.page-select, [class*='counter'], [data-page]",
   expectedCountRegex: "(?:\\/|of)\\s*(\\d+)",
   pillPosition: "top-left",
   toolbarPosition: "top-left",
-} satisfies SiteRule;
+};
+
+export default comixRule;

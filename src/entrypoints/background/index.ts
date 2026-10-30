@@ -1,5 +1,5 @@
 import { env } from "@/lib/env";
-import { downloadArtifactHF, arrayBufferToBase64DataUrl, isArtifactCached, streamArtifactToCache, resolveArtifactUrl, isAbortError, clearPartialByUrl, clearAllPartialDownloads } from "@/lib/utils";
+import { downloadArtifactHF, arrayBufferToBase64DataUrl, sniffMime, isArtifactCached, streamArtifactToCache, resolveArtifactUrl, isAbortError, clearPartialByUrl, clearAllPartialDownloads } from "@/lib/utils";
 import { checkArtifactUpdate, forceRefreshArtifact } from "@/lib/models/updates";
 import { detectHardware, ensureOffscreen } from "./utils";
 import { DefaultConfig, SUPPORTED_LANG_GROUPS, normalizeDetectionModel, resolveLangGroup } from "@/lib/configs";
@@ -549,6 +549,134 @@ export default defineBackground(() => {
     // Service worker keep-alive heartbeat while background chapter preparation runs
     if (msg.type === "CHAPTER_PREP_HEARTBEAT") {
       respond({ alive: true, timestamp: Date.now() });
+      return true;
+    }
+
+    // M1.4.3: Decoupled Chapter Page Asset Fetch & Integrity Verification
+    // Fetches manga page images directly from the background worker bypassing CORS
+    // and reader DOM virtualization, validates binary signatures, decodes dimensions,
+    // computes SHA-256 integrity hash, and returns a verified data URL.
+    if (msg.type === "FETCH_CHAPTER_PAGE_IMAGE") {
+      const { url, referer } = msg.data ?? {};
+      const task = async () => {
+        if (!url || typeof url !== "string") {
+          return { success: false, error: "Invalid or empty image URL" };
+        }
+        if (!isAllowedImageUrl(url, referer)) {
+          return { success: false, error: "Security rejection: Disallowed or unsafe image URL" };
+        }
+
+        const ruleId = 100000 + Math.floor(Math.random() * 800000);
+        const dnr = (browser as any).declarativeNetRequest;
+        if (dnr?.updateSessionRules && referer) {
+          try {
+            await dnr.updateSessionRules({
+              removeRuleIds: [ruleId],
+              addRules: [
+                {
+                  id: ruleId,
+                  priority: 1,
+                  action: {
+                    type: "modifyHeaders",
+                    requestHeaders: [
+                      {
+                        header: "Referer",
+                        operation: "set",
+                        value: referer,
+                      },
+                    ],
+                  },
+                  condition: {
+                    urlFilter: url.replace(/[?#].*$/, ""),
+                    resourceTypes: ["xmlhttprequest", "other", "image"],
+                  },
+                },
+              ],
+            });
+          } catch (e) {
+            console.warn("LMT: Failed to set DNR rule for page asset fetch:", e);
+          }
+        }
+
+        try {
+          const res = await fetch(url, {
+            method: "GET",
+            headers: {
+              Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            },
+            credentials: "omit",
+          });
+          if (!res.ok) {
+            return {
+              success: false,
+              error: `HTTP fetch failed with status ${res.status}: ${res.statusText}`,
+            };
+          }
+          const buf = await res.arrayBuffer();
+          if (buf.byteLength === 0) {
+            return { success: false, error: "Empty buffer received for page image" };
+          }
+          const bytes = new Uint8Array(buf);
+          const mime = sniffMime(bytes);
+
+          // Validate magic bytes
+          const isValidImage =
+            (bytes[0] === 0xff && bytes[1] === 0xd8) || // JPEG
+            (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) || // PNG
+            (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) || // WebP
+            (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) || // GIF
+            (bytes[4] === 0x66 && bytes[5] === 0x79 && bytes[6] === 0x70); // AVIF
+
+          if (!isValidImage) {
+            return {
+              success: false,
+              error: "Downloaded asset is not a valid image format (unrecognized magic bytes)",
+            };
+          }
+
+          let width = 0;
+          let height = 0;
+          try {
+            if (typeof createImageBitmap === "function") {
+              const blob = new Blob([buf], { type: mime });
+              const bitmap = await createImageBitmap(blob);
+              width = bitmap.width;
+              height = bitmap.height;
+              bitmap.close();
+            }
+          } catch {}
+
+          let hash = "";
+          try {
+            if (typeof crypto !== "undefined" && crypto.subtle?.digest) {
+              const hashBuf = await crypto.subtle.digest("SHA-256", buf);
+              const hashArr = Array.from(new Uint8Array(hashBuf));
+              hash = hashArr.map((b) => b.toString(16).padStart(2, "0")).join("");
+            }
+          } catch {}
+
+          const dataUrl = arrayBufferToBase64DataUrl(buf);
+          return {
+            success: true,
+            dataUrl,
+            mimeType: mime,
+            byteLength: buf.byteLength,
+            width,
+            height,
+            hash,
+          };
+        } finally {
+          if (dnr?.updateSessionRules && referer) {
+            await dnr
+              .updateSessionRules({
+                removeRuleIds: [ruleId],
+              })
+              .catch(() => {});
+          }
+        }
+      };
+
+      keepAliveWhile(task().then(respond).catch(respondErr));
       return true;
     }
 

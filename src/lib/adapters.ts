@@ -43,7 +43,10 @@ export interface SiteRule {
 // Long-trusted sites live here. For everything else, drop a new adapter file
 // into src/lib/adapters/ - it is auto-imported at build time.
 // See src/lib/adapters/README.md.
+import comixRule from "./adapters/comix.to";
+
 export const COMMUNITY_RULES: SiteRule[] = [
+  comixRule,
   {
     id: "mangadex",
     domain: "mangadex.org",
