@@ -1,0 +1,1332 @@
+{
+  "chapterKey": "zipang__54",
+  "totalPages": 22,
+  "totalDialogueRegions": 139,
+  "createdAt": 1793400041851,
+  "pages": [
+    {
+      "pageId": "zipang__54__page_0",
+      "pageIndex": 0,
+      "pageNumber": 1,
+      "sourceImageSha256": "4792eaab1b45b961db7844c78511514b08798c77255c1d75539b4d5f664be61a",
+      "regionCount": 5,
+      "bboxes": [
+        {
+          "x1": 562,
+          "y1": 134,
+          "x2": 790,
+          "y2": 247,
+          "confidence": 0.7703
+        },
+        {
+          "x1": 43,
+          "y1": 183,
+          "x2": 256,
+          "y2": 232,
+          "confidence": 0.4956
+        },
+        {
+          "x1": 90,
+          "y1": 293,
+          "x2": 761,
+          "y2": 366,
+          "confidence": 0.6861
+        },
+        {
+          "x1": 98,
+          "y1": 493,
+          "x2": 744,
+          "y2": 589,
+          "confidence": 0.786
+        },
+        {
+          "x1": 4,
+          "y1": 662,
+          "x2": 786,
+          "y2": 1161,
+          "confidence": 0.9175
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400015235
+      },
+      "annotatedImageSha256": "4468a075f79c640205400789df7c92f8577173fa95a164ebc3cf583ed71a859a"
+    },
+    {
+      "pageId": "zipang__54__page_1",
+      "pageIndex": 1,
+      "pageNumber": 2,
+      "sourceImageSha256": "288ab2ca9b10e65bf72e2b5e77d4cbfc04fe5f59f544d540267b6675b30b1c04",
+      "regionCount": 9,
+      "bboxes": [
+        {
+          "x1": 563,
+          "y1": 113,
+          "x2": 698,
+          "y2": 200,
+          "confidence": 0.9279
+        },
+        {
+          "x1": 57,
+          "y1": 287,
+          "x2": 188,
+          "y2": 346,
+          "confidence": 0.9207
+        },
+        {
+          "x1": 622,
+          "y1": 445,
+          "x2": 733,
+          "y2": 534,
+          "confidence": 0.9369
+        },
+        {
+          "x1": 397,
+          "y1": 457,
+          "x2": 482,
+          "y2": 512,
+          "confidence": 0.9206
+        },
+        {
+          "x1": 130,
+          "y1": 463,
+          "x2": 237,
+          "y2": 521,
+          "confidence": 0.921
+        },
+        {
+          "x1": 267,
+          "y1": 893,
+          "x2": 314,
+          "y2": 915,
+          "confidence": 0.3646
+        },
+        {
+          "x1": 78,
+          "y1": 914,
+          "x2": 148,
+          "y2": 940,
+          "confidence": 0.4257
+        },
+        {
+          "x1": 591,
+          "y1": 920,
+          "x2": 737,
+          "y2": 997,
+          "confidence": 0.9235
+        },
+        {
+          "x1": 734,
+          "y1": 1123,
+          "x2": 797,
+          "y2": 1152,
+          "confidence": 0.6312
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400017057
+      },
+      "annotatedImageSha256": "6ff1059e0c89553c8b98a979624d965b7bd97867d9cd8837fdd9a6ea90a05b91"
+    },
+    {
+      "pageId": "zipang__54__page_2",
+      "pageIndex": 2,
+      "pageNumber": 3,
+      "sourceImageSha256": "af06e2a2ff37ebbbc58c1ea1fd81320ff4a52e6238bd5176aeb1d46a2d9dc172",
+      "regionCount": 2,
+      "bboxes": [
+        {
+          "x1": 10,
+          "y1": 9,
+          "x2": 190,
+          "y2": 48,
+          "confidence": 0.4742
+        },
+        {
+          "x1": 35,
+          "y1": 741,
+          "x2": 744,
+          "y2": 818,
+          "confidence": 0.7864
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400018426
+      },
+      "annotatedImageSha256": "ef4e21ca0beeae00ad83698bd34f514ebba744698c3762b717eb8d460785c5b0"
+    },
+    {
+      "pageId": "zipang__54__page_3",
+      "pageIndex": 3,
+      "pageNumber": 4,
+      "sourceImageSha256": "c3a22e8d34ff7a353303fc99c302a84e1f7efff9c74aac8f8f525698f7da9c05",
+      "regionCount": 5,
+      "bboxes": [
+        {
+          "x1": 189,
+          "y1": 175,
+          "x2": 287,
+          "y2": 236,
+          "confidence": 0.8792
+        },
+        {
+          "x1": 516,
+          "y1": 646,
+          "x2": 616,
+          "y2": 702,
+          "confidence": 0.9221
+        },
+        {
+          "x1": 739,
+          "y1": 717,
+          "x2": 800,
+          "y2": 759,
+          "confidence": 0.8908
+        },
+        {
+          "x1": 723,
+          "y1": 995,
+          "x2": 800,
+          "y2": 1032,
+          "confidence": 0.8871
+        },
+        {
+          "x1": 514,
+          "y1": 1086,
+          "x2": 606,
+          "y2": 1137,
+          "confidence": 0.9054
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400019504
+      },
+      "annotatedImageSha256": "73a98ce7e3aa397d03a1668910434cee0f00dc20c36ff43bac83a18b757cfd1b"
+    },
+    {
+      "pageId": "zipang__54__page_4",
+      "pageIndex": 4,
+      "pageNumber": 5,
+      "sourceImageSha256": "b0d0159ca752dec574ac67c90677726100d609035dfab6958504196b52cb68ce",
+      "regionCount": 10,
+      "bboxes": [
+        {
+          "x1": 626,
+          "y1": 115,
+          "x2": 714,
+          "y2": 177,
+          "confidence": 0.9063
+        },
+        {
+          "x1": 380,
+          "y1": 266,
+          "x2": 476,
+          "y2": 339,
+          "confidence": 0.9301
+        },
+        {
+          "x1": 592,
+          "y1": 418,
+          "x2": 712,
+          "y2": 488,
+          "confidence": 0.9345
+        },
+        {
+          "x1": 72,
+          "y1": 410,
+          "x2": 200,
+          "y2": 504,
+          "confidence": 0.9345
+        },
+        {
+          "x1": 591,
+          "y1": 691,
+          "x2": 677,
+          "y2": 711,
+          "confidence": 0.452
+        },
+        {
+          "x1": 401,
+          "y1": 716,
+          "x2": 502,
+          "y2": 780,
+          "confidence": 0.9142
+        },
+        {
+          "x1": 293,
+          "y1": 700,
+          "x2": 380,
+          "y2": 786,
+          "confidence": 0.9269
+        },
+        {
+          "x1": 611,
+          "y1": 924,
+          "x2": 713,
+          "y2": 1004,
+          "confidence": 0.9099
+        },
+        {
+          "x1": 65,
+          "y1": 1025,
+          "x2": 156,
+          "y2": 1091,
+          "confidence": 0.9098
+        },
+        {
+          "x1": 620,
+          "y1": 1095,
+          "x2": 797,
+          "y2": 1131,
+          "confidence": 0.481
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400020703
+      },
+      "annotatedImageSha256": "9d47811eda3189d8ad40cbaf903e06d0ce3588d51c6bfa48b0d76424893d5922"
+    },
+    {
+      "pageId": "zipang__54__page_5",
+      "pageIndex": 5,
+      "pageNumber": 6,
+      "sourceImageSha256": "6b7be312eca242305052695fda8f375b37726156ddb1ac838c4d98dfe48e521a",
+      "regionCount": 7,
+      "bboxes": [
+        {
+          "x1": 622,
+          "y1": 10,
+          "x2": 796,
+          "y2": 44,
+          "confidence": 0.494
+        },
+        {
+          "x1": 643,
+          "y1": 110,
+          "x2": 744,
+          "y2": 200,
+          "confidence": 0.9452
+        },
+        {
+          "x1": 281,
+          "y1": 118,
+          "x2": 373,
+          "y2": 199,
+          "confidence": 0.93
+        },
+        {
+          "x1": 386,
+          "y1": 289,
+          "x2": 496,
+          "y2": 377,
+          "confidence": 0.9383
+        },
+        {
+          "x1": 643,
+          "y1": 468,
+          "x2": 747,
+          "y2": 532,
+          "confidence": 0.9363
+        },
+        {
+          "x1": 632,
+          "y1": 742,
+          "x2": 735,
+          "y2": 820,
+          "confidence": 0.9324
+        },
+        {
+          "x1": 100,
+          "y1": 739,
+          "x2": 213,
+          "y2": 840,
+          "confidence": 0.9256
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400021791
+      },
+      "annotatedImageSha256": "d2575e354185ba8716efd13038fbcc8e7b010acab55016ffe75d0cde1414a351"
+    },
+    {
+      "pageId": "zipang__54__page_6",
+      "pageIndex": 6,
+      "pageNumber": 7,
+      "sourceImageSha256": "97fc78177e7fef8356683d03f85bb3c9774b44167bb486a2bd043391731b43e0",
+      "regionCount": 11,
+      "bboxes": [
+        {
+          "x1": 721,
+          "y1": 13,
+          "x2": 797,
+          "y2": 41,
+          "confidence": 0.6649
+        },
+        {
+          "x1": 622,
+          "y1": 72,
+          "x2": 712,
+          "y2": 157,
+          "confidence": 0.9402
+        },
+        {
+          "x1": 294,
+          "y1": 101,
+          "x2": 369,
+          "y2": 166,
+          "confidence": 0.8918
+        },
+        {
+          "x1": 193,
+          "y1": 103,
+          "x2": 267,
+          "y2": 189,
+          "confidence": 0.9274
+        },
+        {
+          "x1": 69,
+          "y1": 315,
+          "x2": 153,
+          "y2": 412,
+          "confidence": 0.928
+        },
+        {
+          "x1": 404,
+          "y1": 352,
+          "x2": 462,
+          "y2": 400,
+          "confidence": 0.8622
+        },
+        {
+          "x1": 587,
+          "y1": 483,
+          "x2": 716,
+          "y2": 571,
+          "confidence": 0.9361
+        },
+        {
+          "x1": 69,
+          "y1": 482,
+          "x2": 206,
+          "y2": 569,
+          "confidence": 0.9471
+        },
+        {
+          "x1": 317,
+          "y1": 796,
+          "x2": 420,
+          "y2": 857,
+          "confidence": 0.931
+        },
+        {
+          "x1": 15,
+          "y1": 785,
+          "x2": 140,
+          "y2": 884,
+          "confidence": 0.941
+        },
+        {
+          "x1": 443,
+          "y1": 985,
+          "x2": 526,
+          "y2": 1037,
+          "confidence": 0.9096
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400022876
+      },
+      "annotatedImageSha256": "46b0b59f42008fe25bf0939ee8f9f5b2aa2d59f4cf5cb4ae0ad3c588f50a2b1f"
+    },
+    {
+      "pageId": "zipang__54__page_7",
+      "pageIndex": 7,
+      "pageNumber": 8,
+      "sourceImageSha256": "ba9fb38894142e5c248c3bd9fe5079e3237fce731cf73dc4c64f224d5a9fcbde",
+      "regionCount": 10,
+      "bboxes": [
+        {
+          "x1": 622,
+          "y1": 10,
+          "x2": 796,
+          "y2": 44,
+          "confidence": 0.4699
+        },
+        {
+          "x1": 640,
+          "y1": 119,
+          "x2": 739,
+          "y2": 193,
+          "confidence": 0.9322
+        },
+        {
+          "x1": 408,
+          "y1": 108,
+          "x2": 512,
+          "y2": 210,
+          "confidence": 0.9503
+        },
+        {
+          "x1": 199,
+          "y1": 123,
+          "x2": 291,
+          "y2": 189,
+          "confidence": 0.9309
+        },
+        {
+          "x1": 527,
+          "y1": 322,
+          "x2": 614,
+          "y2": 413,
+          "confidence": 0.9401
+        },
+        {
+          "x1": 81,
+          "y1": 333,
+          "x2": 173,
+          "y2": 400,
+          "confidence": 0.9358
+        },
+        {
+          "x1": 84,
+          "y1": 493,
+          "x2": 207,
+          "y2": 568,
+          "confidence": 0.9301
+        },
+        {
+          "x1": 655,
+          "y1": 788,
+          "x2": 735,
+          "y2": 858,
+          "confidence": 0.9139
+        },
+        {
+          "x1": 309,
+          "y1": 781,
+          "x2": 400,
+          "y2": 847,
+          "confidence": 0.9219
+        },
+        {
+          "x1": 420,
+          "y1": 984,
+          "x2": 502,
+          "y2": 1050,
+          "confidence": 0.8984
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400024065
+      },
+      "annotatedImageSha256": "c291265b905f454e177ab06a6c49b943a34c76c84e05fb85c1eefc6b42a0150c"
+    },
+    {
+      "pageId": "zipang__54__page_8",
+      "pageIndex": 8,
+      "pageNumber": 9,
+      "sourceImageSha256": "4a164a778a5d1906257f81323c484dd9cffe2ba9dfb06dae2b68a9bd46b3d942",
+      "regionCount": 10,
+      "bboxes": [
+        {
+          "x1": 622,
+          "y1": 10,
+          "x2": 796,
+          "y2": 45,
+          "confidence": 0.5419
+        },
+        {
+          "x1": 616,
+          "y1": 107,
+          "x2": 710,
+          "y2": 192,
+          "confidence": 0.9187
+        },
+        {
+          "x1": 243,
+          "y1": 105,
+          "x2": 303,
+          "y2": 179,
+          "confidence": 0.8928
+        },
+        {
+          "x1": 327,
+          "y1": 316,
+          "x2": 435,
+          "y2": 385,
+          "confidence": 0.9265
+        },
+        {
+          "x1": 69,
+          "y1": 295,
+          "x2": 162,
+          "y2": 386,
+          "confidence": 0.9349
+        },
+        {
+          "x1": 599,
+          "y1": 460,
+          "x2": 719,
+          "y2": 526,
+          "confidence": 0.9247
+        },
+        {
+          "x1": 328,
+          "y1": 460,
+          "x2": 428,
+          "y2": 521,
+          "confidence": 0.9118
+        },
+        {
+          "x1": 638,
+          "y1": 776,
+          "x2": 720,
+          "y2": 815,
+          "confidence": 0.8964
+        },
+        {
+          "x1": 394,
+          "y1": 774,
+          "x2": 492,
+          "y2": 812,
+          "confidence": 0.9004
+        },
+        {
+          "x1": 58,
+          "y1": 771,
+          "x2": 137,
+          "y2": 834,
+          "confidence": 0.8931
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400025195
+      },
+      "annotatedImageSha256": "3f5b6a23ce215dfc043a565943ab82832215aebd441fee967ce8f1b551580c67"
+    },
+    {
+      "pageId": "zipang__54__page_9",
+      "pageIndex": 9,
+      "pageNumber": 10,
+      "sourceImageSha256": "913450b438ee079caf4b497eae443c940b7f01615b73067c5d745decff72af7c",
+      "regionCount": 0,
+      "bboxes": [],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400026205
+      },
+      "annotatedImageSha256": "50614d7284e62341b31c7d56c9a6b2714271500b2e3b9e8474c9af34c070142a"
+    },
+    {
+      "pageId": "zipang__54__page_10",
+      "pageIndex": 10,
+      "pageNumber": 11,
+      "sourceImageSha256": "af8693a8401715879a476c21122a4abb4dcfcf215e5c45cb0c90dc4eb5bd0407",
+      "regionCount": 6,
+      "bboxes": [
+        {
+          "x1": 626,
+          "y1": 12,
+          "x2": 796,
+          "y2": 42,
+          "confidence": 0.4895
+        },
+        {
+          "x1": 367,
+          "y1": 109,
+          "x2": 490,
+          "y2": 193,
+          "confidence": 0.9432
+        },
+        {
+          "x1": 507,
+          "y1": 344,
+          "x2": 582,
+          "y2": 394,
+          "confidence": 0.9233
+        },
+        {
+          "x1": 64,
+          "y1": 335,
+          "x2": 172,
+          "y2": 395,
+          "confidence": 0.933
+        },
+        {
+          "x1": 590,
+          "y1": 771,
+          "x2": 706,
+          "y2": 833,
+          "confidence": 0.921
+        },
+        {
+          "x1": 55,
+          "y1": 780,
+          "x2": 137,
+          "y2": 814,
+          "confidence": 0.8803
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400027472
+      },
+      "annotatedImageSha256": "478109225339b0ee5ebafdcba629366115d3f08d96612a3a6ac01bef3b796296"
+    },
+    {
+      "pageId": "zipang__54__page_11",
+      "pageIndex": 11,
+      "pageNumber": 12,
+      "sourceImageSha256": "ec74e4c43d832412d131d352a462cdbdfa878ec6f7817aae78560db3a56d8566",
+      "regionCount": 8,
+      "bboxes": [
+        {
+          "x1": 10,
+          "y1": 10,
+          "x2": 190,
+          "y2": 45,
+          "confidence": 0.5271
+        },
+        {
+          "x1": 657,
+          "y1": 112,
+          "x2": 741,
+          "y2": 192,
+          "confidence": 0.9169
+        },
+        {
+          "x1": 425,
+          "y1": 112,
+          "x2": 480,
+          "y2": 149,
+          "confidence": 0.8792
+        },
+        {
+          "x1": 185,
+          "y1": 109,
+          "x2": 280,
+          "y2": 135,
+          "confidence": 0.4023
+        },
+        {
+          "x1": 501,
+          "y1": 344,
+          "x2": 581,
+          "y2": 397,
+          "confidence": 0.9097
+        },
+        {
+          "x1": 90,
+          "y1": 354,
+          "x2": 165,
+          "y2": 380,
+          "confidence": 0.8741
+        },
+        {
+          "x1": 259,
+          "y1": 777,
+          "x2": 376,
+          "y2": 852,
+          "confidence": 0.9395
+        },
+        {
+          "x1": 87,
+          "y1": 1016,
+          "x2": 185,
+          "y2": 1072,
+          "confidence": 0.9146
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400028943
+      },
+      "annotatedImageSha256": "3125088acacaf7c4a5b3b800b962478703ebf5feed1e6b7cc4dd2f657e61522b"
+    },
+    {
+      "pageId": "zipang__54__page_12",
+      "pageIndex": 12,
+      "pageNumber": 13,
+      "sourceImageSha256": "6249720b6fc91a9d1308362725c7190ce2ecec5192fa10f554224d56a13a4f38",
+      "regionCount": 9,
+      "bboxes": [
+        {
+          "x1": 404,
+          "y1": 103,
+          "x2": 467,
+          "y2": 155,
+          "confidence": 0.8695
+        },
+        {
+          "x1": 322,
+          "y1": 114,
+          "x2": 384,
+          "y2": 140,
+          "confidence": 0.86
+        },
+        {
+          "x1": 65,
+          "y1": 212,
+          "x2": 162,
+          "y2": 296,
+          "confidence": 0.9361
+        },
+        {
+          "x1": 66,
+          "y1": 375,
+          "x2": 174,
+          "y2": 441,
+          "confidence": 0.9239
+        },
+        {
+          "x1": 531,
+          "y1": 566,
+          "x2": 722,
+          "y2": 586,
+          "confidence": 0.6032
+        },
+        {
+          "x1": 595,
+          "y1": 618,
+          "x2": 714,
+          "y2": 710,
+          "confidence": 0.9277
+        },
+        {
+          "x1": 244,
+          "y1": 617,
+          "x2": 309,
+          "y2": 661,
+          "confidence": 0.9047
+        },
+        {
+          "x1": 336,
+          "y1": 934,
+          "x2": 441,
+          "y2": 1010,
+          "confidence": 0.9133
+        },
+        {
+          "x1": 3,
+          "y1": 1082,
+          "x2": 181,
+          "y2": 1134,
+          "confidence": 0.3853
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400030199
+      },
+      "annotatedImageSha256": "153e233a048413aaa546ca0bc9df1d624ae1b971bebe6fd2cf9a5e9e0d4eba09"
+    },
+    {
+      "pageId": "zipang__54__page_13",
+      "pageIndex": 13,
+      "pageNumber": 14,
+      "sourceImageSha256": "f483b43794f56786246f61d14f9c472a6f1641f8769e0e763b75e4cca1732882",
+      "regionCount": 2,
+      "bboxes": [
+        {
+          "x1": 92,
+          "y1": 988,
+          "x2": 187,
+          "y2": 1033,
+          "confidence": 0.9088
+        },
+        {
+          "x1": 617,
+          "y1": 1093,
+          "x2": 797,
+          "y2": 1145,
+          "confidence": 0.3788
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400031426
+      },
+      "annotatedImageSha256": "26a129e49d6050e8f117ca675d5c07e3eaf603b60554eae33ff9d7189c887906"
+    },
+    {
+      "pageId": "zipang__54__page_14",
+      "pageIndex": 14,
+      "pageNumber": 15,
+      "sourceImageSha256": "adb30cac31521e1d2e070f777a15bdbb246e385f924784ab844ce157b7c59659",
+      "regionCount": 6,
+      "bboxes": [
+        {
+          "x1": 540,
+          "y1": 144,
+          "x2": 673,
+          "y2": 275,
+          "confidence": 0.879
+        },
+        {
+          "x1": 108,
+          "y1": 144,
+          "x2": 239,
+          "y2": 207,
+          "confidence": 0.8233
+        },
+        {
+          "x1": 629,
+          "y1": 612,
+          "x2": 712,
+          "y2": 671,
+          "confidence": 0.9023
+        },
+        {
+          "x1": 268,
+          "y1": 621,
+          "x2": 376,
+          "y2": 718,
+          "confidence": 0.9398
+        },
+        {
+          "x1": 395,
+          "y1": 863,
+          "x2": 513,
+          "y2": 948,
+          "confidence": 0.9293
+        },
+        {
+          "x1": 25,
+          "y1": 920,
+          "x2": 173,
+          "y2": 1034,
+          "confidence": 0.9411
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400032484
+      },
+      "annotatedImageSha256": "2d89504e8860b790990f34419f42ec6385d9ba1999d303d16ed112181f8b8a2a"
+    },
+    {
+      "pageId": "zipang__54__page_15",
+      "pageIndex": 15,
+      "pageNumber": 16,
+      "sourceImageSha256": "dd3d80b6d72895004fbf6fa4fec7b07873156ce10feae1afc231152276db59c9",
+      "regionCount": 6,
+      "bboxes": [
+        {
+          "x1": 587,
+          "y1": 67,
+          "x2": 719,
+          "y2": 148,
+          "confidence": 0.9342
+        },
+        {
+          "x1": 96,
+          "y1": 214,
+          "x2": 219,
+          "y2": 296,
+          "confidence": 0.9178
+        },
+        {
+          "x1": 645,
+          "y1": 530,
+          "x2": 743,
+          "y2": 638,
+          "confidence": 0.9436
+        },
+        {
+          "x1": 98,
+          "y1": 552,
+          "x2": 185,
+          "y2": 609,
+          "confidence": 0.9027
+        },
+        {
+          "x1": 373,
+          "y1": 700,
+          "x2": 453,
+          "y2": 772,
+          "confidence": 0.9306
+        },
+        {
+          "x1": 679,
+          "y1": 852,
+          "x2": 742,
+          "y2": 878,
+          "confidence": 0.8677
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400033723
+      },
+      "annotatedImageSha256": "5ebdf27e0f21a0ee2d43bd744776bc195f2173b54e02bcb908cb766f1a8c53f6"
+    },
+    {
+      "pageId": "zipang__54__page_16",
+      "pageIndex": 16,
+      "pageNumber": 17,
+      "sourceImageSha256": "fde82b40b6bc891d58fd1bf4655c9a231c20ab57967ec4a0fbb91558a9126ec9",
+      "regionCount": 9,
+      "bboxes": [
+        {
+          "x1": 9,
+          "y1": 9,
+          "x2": 191,
+          "y2": 46,
+          "confidence": 0.5746
+        },
+        {
+          "x1": 453,
+          "y1": 158,
+          "x2": 689,
+          "y2": 293,
+          "confidence": 0.9393
+        },
+        {
+          "x1": 610,
+          "y1": 494,
+          "x2": 703,
+          "y2": 567,
+          "confidence": 0.9135
+        },
+        {
+          "x1": 310,
+          "y1": 502,
+          "x2": 374,
+          "y2": 560,
+          "confidence": 0.9162
+        },
+        {
+          "x1": 392,
+          "y1": 654,
+          "x2": 478,
+          "y2": 697,
+          "confidence": 0.9165
+        },
+        {
+          "x1": 76,
+          "y1": 643,
+          "x2": 162,
+          "y2": 718,
+          "confidence": 0.9328
+        },
+        {
+          "x1": 462,
+          "y1": 818,
+          "x2": 560,
+          "y2": 873,
+          "confidence": 0.9151
+        },
+        {
+          "x1": 200,
+          "y1": 802,
+          "x2": 305,
+          "y2": 880,
+          "confidence": 0.9289
+        },
+        {
+          "x1": 317,
+          "y1": 964,
+          "x2": 424,
+          "y2": 1019,
+          "confidence": 0.8929
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400034749
+      },
+      "annotatedImageSha256": "a9739de9a32c0e9a95e8f5cd85833ad991dd0f20cabb7b0c7fdde665dd8e213a"
+    },
+    {
+      "pageId": "zipang__54__page_17",
+      "pageIndex": 17,
+      "pageNumber": 18,
+      "sourceImageSha256": "c65b9bc2083d9fa5950871047947634615e5250b5b2e7e03dc348f77ff57928a",
+      "regionCount": 5,
+      "bboxes": [
+        {
+          "x1": 90,
+          "y1": 363,
+          "x2": 200,
+          "y2": 481,
+          "confidence": 0.9493
+        },
+        {
+          "x1": 506,
+          "y1": 617,
+          "x2": 605,
+          "y2": 718,
+          "confidence": 0.9404
+        },
+        {
+          "x1": 364,
+          "y1": 654,
+          "x2": 490,
+          "y2": 721,
+          "confidence": 0.9204
+        },
+        {
+          "x1": 95,
+          "y1": 980,
+          "x2": 205,
+          "y2": 1076,
+          "confidence": 0.9241
+        },
+        {
+          "x1": 618,
+          "y1": 1101,
+          "x2": 797,
+          "y2": 1144,
+          "confidence": 0.4324
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400035823
+      },
+      "annotatedImageSha256": "e2e3cc59b845e715c01e982babf7522e55e8950a3e53a763261a5886afa01adf"
+    },
+    {
+      "pageId": "zipang__54__page_18",
+      "pageIndex": 18,
+      "pageNumber": 19,
+      "sourceImageSha256": "e4db8a0babe849a2df0ac0ed2c9683cf0599a3e3ac802f2a8868e60171b335a5",
+      "regionCount": 1,
+      "bboxes": [
+        {
+          "x1": 620,
+          "y1": 1081,
+          "x2": 799,
+          "y2": 1121,
+          "confidence": 0.6945
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400037017
+      },
+      "annotatedImageSha256": "169fbcf1a910c1a396e903870be1879a6ae61e0b1d3e82c7fefbeaeb98b78ed7"
+    },
+    {
+      "pageId": "zipang__54__page_19",
+      "pageIndex": 19,
+      "pageNumber": 20,
+      "sourceImageSha256": "6906800cea199ae3a6fd416c284f78fcef6872a82e1ec0139d4a6029fe474f88",
+      "regionCount": 6,
+      "bboxes": [
+        {
+          "x1": 71,
+          "y1": 157,
+          "x2": 204,
+          "y2": 246,
+          "confidence": 0.9102
+        },
+        {
+          "x1": 662,
+          "y1": 592,
+          "x2": 742,
+          "y2": 666,
+          "confidence": 0.9192
+        },
+        {
+          "x1": 477,
+          "y1": 592,
+          "x2": 543,
+          "y2": 640,
+          "confidence": 0.9161
+        },
+        {
+          "x1": 1119,
+          "y1": 609,
+          "x2": 1200,
+          "y2": 666,
+          "confidence": 0.9129
+        },
+        {
+          "x1": 216,
+          "y1": 620,
+          "x2": 287,
+          "y2": 669,
+          "confidence": 0.9068
+        },
+        {
+          "x1": 969,
+          "y1": 780,
+          "x2": 1046,
+          "y2": 818,
+          "confidence": 0.8849
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400038941
+      },
+      "annotatedImageSha256": "016d1cc8fc46a84802af2d1123256c4b81b42ee767e79394ec0973a87fc9eb92"
+    },
+    {
+      "pageId": "zipang__54__page_20",
+      "pageIndex": 20,
+      "pageNumber": 21,
+      "sourceImageSha256": "765f9be600e5458126c18dc6e06154c5332305e90e78c247c95e90113767590d",
+      "regionCount": 8,
+      "bboxes": [
+        {
+          "x1": 226,
+          "y1": 108,
+          "x2": 341,
+          "y2": 205,
+          "confidence": 0.9344
+        },
+        {
+          "x1": 465,
+          "y1": 129,
+          "x2": 554,
+          "y2": 186,
+          "confidence": 0.9241
+        },
+        {
+          "x1": 565,
+          "y1": 332,
+          "x2": 642,
+          "y2": 401,
+          "confidence": 0.9238
+        },
+        {
+          "x1": 93,
+          "y1": 400,
+          "x2": 181,
+          "y2": 434,
+          "confidence": 0.8673
+        },
+        {
+          "x1": 116,
+          "y1": 869,
+          "x2": 229,
+          "y2": 934,
+          "confidence": 0.9187
+        },
+        {
+          "x1": 109,
+          "y1": 1046,
+          "x2": 372,
+          "y2": 1105,
+          "confidence": 0.6086
+        },
+        {
+          "x1": 122,
+          "y1": 1099,
+          "x2": 179,
+          "y2": 1132,
+          "confidence": 0.3951
+        },
+        {
+          "x1": 2,
+          "y1": 1100,
+          "x2": 105,
+          "y2": 1137,
+          "confidence": 0.541
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400040229
+      },
+      "annotatedImageSha256": "3c215ae707013a99b7fe182b9a1f7007791508b73f354d2398ef64a4f10d8a61"
+    },
+    {
+      "pageId": "zipang__54__page_21",
+      "pageIndex": 21,
+      "pageNumber": 22,
+      "sourceImageSha256": "e7a21225714e87eb35c033d7a7d4674c941eeac52575d7feb45e1174cd9e600a",
+      "regionCount": 4,
+      "bboxes": [
+        {
+          "x1": 127,
+          "y1": 564,
+          "x2": 609,
+          "y2": 718,
+          "confidence": 0.7883
+        },
+        {
+          "x1": 75,
+          "y1": 739,
+          "x2": 665,
+          "y2": 845,
+          "confidence": 0.8765
+        },
+        {
+          "x1": 53,
+          "y1": 924,
+          "x2": 686,
+          "y2": 1123,
+          "confidence": 0.4764
+        },
+        {
+          "x1": 4,
+          "y1": 1150,
+          "x2": 183,
+          "y2": 1191,
+          "confidence": 0.6635
+        }
+      ],
+      "detectionProvenance": {
+        "detectorModel": "detector-v4-s_int8.onnx",
+        "minConfidence": 0.35,
+        "modelWeightsHash": "7b0559eb774a0bb2fbe282f183713063bfef605151ee6e1cb2d3ddb2e2d09ec2",
+        "generatedAt": 1793400041488
+      },
+      "annotatedImageSha256": "958f7572a6e488dfb660ecd1f6568f866fb940a12495fa7371b87ef2b8255fdd"
+    }
+  ]
+}

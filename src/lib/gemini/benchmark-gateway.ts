@@ -101,9 +101,16 @@ export class BenchmarkTransportGateway {
    * Reads and parses the durable ledger with FAIL-CLOSED integrity check.
    * If the ledger file exists on disk but is unparseable or corrupted,
    * it strictly throws rather than resetting attempts to zero.
+   * Pass { requireExisting: true } to block initialization when ledger is missing.
    */
-  getLedgerState(): BenchmarkLedgerState {
+  getLedgerState(options?: { requireExisting?: boolean }): BenchmarkLedgerState {
     if (!fs.existsSync(this.ledgerPath)) {
+      if (options?.requireExisting) {
+        throw new Error(
+          `FAIL-CLOSED INTEGRITY ERROR: Benchmark ledger file not found at '${this.ledgerPath}'. ` +
+            `Resumed benchmark execution strictly requires an existing ledger to preserve trial history and prevent unauthorized budget resets.`,
+        );
+      }
       return {
         missionBudgetLimit: this.MAX_MISSION_ATTEMPTS,
         missionAttemptsConsumed: 0,
@@ -237,7 +244,8 @@ export class BenchmarkTransportGateway {
     this.acquireLock();
 
     try {
-      const state = this.getLedgerState();
+      // M1.5.1 Final Correction: Missing ledger must block resumed live dispatch
+      const state = this.getLedgerState({ requireExisting: true });
 
       // Check mission-wide budget limit
       if (state.missionAttemptsConsumed >= state.missionBudgetLimit) {

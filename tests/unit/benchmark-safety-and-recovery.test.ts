@@ -16,7 +16,14 @@ import {
   getMockCorpusPages,
   EXPECTED_ZIPANG_54_PAGE_COUNT,
 } from "../../scripts/corpus-adapter";
-import { ZIPANG_54_PAGE_DIALOGUE_REGIONS } from "../../scripts/run-trial-1";
+import {
+  loadChapterManifest,
+  validateManifestIntegrity,
+  validateSubmissionAgainstManifest,
+  validateTransmittedImageHash,
+  computeSha256,
+  type ChapterRegionManifest,
+} from "../../src/lib/gemini/region-manifest";
 
 const TEST_LEDGER_PATH = path.resolve(process.cwd(), "test-benchmark-ledger.json");
 const TEST_LOCK_PATH = `${TEST_LEDGER_PATH}.lock`;
@@ -28,6 +35,11 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5.1)", () => {
     // Clean only the dedicated test ledger files, NEVER real benchmark-ledger.json!
     if (fs.existsSync(TEST_LEDGER_PATH)) fs.unlinkSync(TEST_LEDGER_PATH);
     if (fs.existsSync(TEST_LOCK_PATH)) fs.unlinkSync(TEST_LOCK_PATH);
+    fs.writeFileSync(
+      TEST_LEDGER_PATH,
+      JSON.stringify({ missionBudgetLimit: 3, missionAttemptsConsumed: 0, entries: [] }, null, 2),
+      "utf8",
+    );
     gateway = new BenchmarkTransportGateway(TEST_LEDGER_PATH);
   });
 
@@ -396,6 +408,21 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5.1)", () => {
         /SAFETY REJECTION: Refusing to reset production ledger/i,
       );
     });
+
+    it("Missing ledger must block resumed live dispatch", async () => {
+      if (fs.existsSync(TEST_LEDGER_PATH)) fs.unlinkSync(TEST_LEDGER_PATH);
+      await expect(
+        gateway.executeBenchmarkInference({
+          experimentId: "exp-missing",
+          trialId: "trial-missing-1",
+          apiKey: "test-key",
+          systemPrompt: "sys",
+          userPrompt: "usr",
+          parts: [],
+          expectedPages: dummyExpectedPages,
+        }),
+      ).rejects.toThrow(/FAIL-CLOSED INTEGRITY ERROR: Benchmark ledger file not found/i);
+    });
   });
 
   // ==========================================================================
@@ -542,9 +569,9 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5.1)", () => {
   });
 
   // ==========================================================================
-  // SECTION F: AUTHENTIC CORPUS & ZERO-WILDCARD VERIFICATION (M1.5.1 CORRECTION)
+  // SECTION F: AUTHENTIC CORPUS & REGION MANIFEST ACCEPTANCE (M1.5.1 FINAL)
   // ==========================================================================
-  describe("Section F: Authentic Corpus & Production Dialogue Contract", () => {
+  describe("Section F: Authentic Corpus & Region Manifest Acceptance", () => {
     it("Authentic corpus adapter -> strictly loads exactly 22 authentic Zipang Ch. 54 pages", () => {
       const pages = getZipangCorpusPages();
       expect(pages.length).toBe(EXPECTED_ZIPANG_54_PAGE_COUNT);
@@ -570,19 +597,70 @@ describe("Hard Safety Gate & Resilient Recovery (M1.5.1)", () => {
       }
     });
 
-    it("Zero wildcard pages -> all 22 Zipang Ch. 54 pages have authentic non-negative expectedCount", () => {
-      for (let i = 0; i < 22; i++) {
-        const pageId = `zipang__54__page_${i}`;
-        const count = ZIPANG_54_PAGE_DIALOGUE_REGIONS[pageId];
-        expect(count).toBeDefined();
-        expect(count).toBeGreaterThanOrEqual(0);
-        // Never wildcard -1
-        expect(count).not.toBe(-1);
+    it("Authoritative region manifest -> strictly loads 139 detector-derived regions across 22 pages", () => {
+      const manifest = loadChapterManifest();
+      expect(manifest.chapterKey).toBe("zipang__54");
+      expect(manifest.totalPages).toBe(22);
+      expect(manifest.totalDialogueRegions).toBe(139); // Corrected: exact sum of RT-DETR boxes
+      expect(manifest.pages.length).toBe(22);
+
+      // Verify every page's regionCount matches its bboxes array length exactly
+      let sum = 0;
+      for (const p of manifest.pages) {
+        expect(p.regionCount).toBe(p.bboxes.length);
+        expect(p.bboxes.length).toBeGreaterThanOrEqual(0);
+        sum += p.regionCount;
       }
-      // Cover page has exactly 0 dialogue
-      expect(ZIPANG_54_PAGE_DIALOGUE_REGIONS["zipang__54__page_0"]).toBe(0);
-      // Dialogue pages have positive dialogue counts
-      expect(ZIPANG_54_PAGE_DIALOGUE_REGIONS["zipang__54__page_1"]).toBeGreaterThan(0);
+      expect(sum).toBe(139);
+    });
+
+    it("A modified expected count without a matching region manifest must fail", () => {
+      const manifest = loadChapterManifest();
+      // Page 0 has 5 regions in manifest. Attempting to submit 4 or 0 must fail!
+      const tamperedSubmission: ExpectedBatchPage[] = [
+        { pageId: "zipang__54__page_0", expectedCount: 999 }, // tampered!
+      ];
+
+      expect(() =>
+        validateSubmissionAgainstManifest(manifest, tamperedSubmission),
+      ).toThrow(/MANIFEST MISMATCH ERROR: Expected count for page 'zipang__54__page_0' \(999\) does not match manifest region count \(5\)/i);
+    });
+
+    it("Missing detector output must not become zero-dialogue success", () => {
+      const corruptedManifest: any = {
+        chapterKey: "corrupted_chapter",
+        totalPages: 1,
+        totalDialogueRegions: 0,
+        createdAt: Date.now(),
+        pages: [
+          {
+            pageId: "page_missing_bboxes",
+            pageIndex: 0,
+            pageNumber: 1,
+            sourceImageSha256: "dummy-hash",
+            regionCount: 0,
+            // bboxes is missing/undefined!
+            detectionProvenance: {},
+            annotatedImageSha256: "ann-hash",
+          },
+        ],
+      };
+
+      expect(() => validateManifestIntegrity(corruptedManifest)).toThrow(
+        /MISSING DETECTOR OUTPUT ERROR: Page 'page_missing_bboxes' lacks valid detector 'bboxes' array/i,
+      );
+    });
+
+    it("The actual transmitted annotated image must match its stored hash", () => {
+      const manifest = loadChapterManifest();
+      const page0 = manifest.pages[0];
+
+      // Transmitting authentic annotated image (matching stored hash) succeeds
+      // Tampering with the image data throws transmission integrity error
+      const tamperedImageBase64 = Buffer.from("corrupted image bytes instead of annotated jpeg").toString("base64");
+      expect(() => validateTransmittedImageHash(page0, tamperedImageBase64)).toThrow(
+        /TRANSMISSION INTEGRITY ERROR: Transmitted image for page 'zipang__54__page_0' has SHA-256 hash/i,
+      );
     });
   });
 });

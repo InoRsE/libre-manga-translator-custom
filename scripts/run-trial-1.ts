@@ -1,20 +1,22 @@
 /**
- * Trial #1: Zipang Chapter 54 Full-Chapter Calibration & Capacity Probe (M1.5 / M1.5.1)
+ * Trial #1: Zipang Chapter 54 Full-Chapter Vision Probe (M1.5 / M1.5.1 Final Correction)
  *
  * Reusable benchmark runner executing exactly ONE live inference HTTP POST request
  * via BenchmarkTransportGateway with cross-process single-writer locking and durable ledger.
  *
- * Target: All 22 distinct real manga pages of Zipang Chapter 54.
+ * Target: All 22 distinct authentic manga pages of Zipang Chapter 54.
  * Workflow: English Scanlation -> Thai Translation (EN->TH).
  * Model: gemini-3.8-flash
  * Thinking: medium
  * Max Output Tokens: 65536
  * Temperature: 0.2
  *
- * M1.5.1 INTEGRATION CORRECTIONS:
- * 1. Zero wildcard pages: strictly establishes authentic dialogue region counts and numbered boxes.
- * 2. Token telemetry: candidatesTokenCount and thoughtsTokenCount are separate (never subtracted).
- * 3. Authentic assets: requires exactly 22 authentic Zipang Ch. 54 assets (no silent fixture fallbacks).
+ * M1.5.1 FINAL EVIDENCE CORRECTIONS:
+ * 1. Region Manifest: Expected translation counts are derived strictly from the verified
+ *    detector manifest (zipang-54-manifest.json, 139 total dialogue regions), NOT handwritten integers.
+ * 2. Transmission Integrity: Transmitted images are verified against their cryptographic SHA-256 hashes.
+ * 3. Fail-Closed Ledger: Missing benchmark ledger strictly blocks live dispatch.
+ * 4. Mode Segregation: Explicitly distinguishes PRODUCTION_BBOX_TRANSLATION from FULL_PAGE_RECOGNITION.
  */
 
 import fs from "fs";
@@ -22,49 +24,35 @@ import path from "path";
 import { BenchmarkTransportGateway } from "../src/lib/gemini/benchmark-gateway";
 import { getBenchmarkApiKey } from "./get-api-key";
 import { getZipangCorpusPages, type ExtractedCorpusPage } from "./corpus-adapter";
+import {
+  loadChapterManifest,
+  validateSubmissionAgainstManifest,
+  validateTransmittedImageHash,
+  computeSha256,
+  type ChapterRegionManifest,
+} from "../src/lib/gemini/region-manifest";
 
 const EXPERIMENT_ID = "M1.5-EMPIRICAL-CAPACITY-BENCHMARK";
 const TRIAL_ID = "trial-1-zipang54-full-chapter";
-export const BENCHMARK_MODE = "PRODUCTION_BBOX_TRANSLATION";
 
-/**
- * Authentic calibrated dialogue region counts per page for Zipang Chapter 54 (English scanlation).
- * Strictly replaces unverified wildcard (-1) contracts.
- */
-export const ZIPANG_54_PAGE_DIALOGUE_REGIONS: Record<string, number> = {
-  "zipang__54__page_0": 0,  // Chapter cover / Title splash art (0 dialogue)
-  "zipang__54__page_1": 4,  // Mirai bridge situational overview (4 regions)
-  "zipang__54__page_2": 6,  // Combat information center dialogue (6 regions)
-  "zipang__54__page_3": 5,  // Officer tactical discussion (5 regions)
-  "zipang__54__page_4": 7,  // Radar operator report & bearing readouts (7 regions)
-  "zipang__54__page_5": 5,  // Executive officer exchange (5 regions)
-  "zipang__54__page_6": 6,  // Navigation plot & fleet heading (6 regions)
-  "zipang__54__page_7": 4,  // Crew reaction dialogue (4 regions)
-  "zipang__54__page_8": 8,  // Command briefing scene (8 regions)
-  "zipang__54__page_9": 7,  // Kadomatsu dialogue (7 regions)
-  "zipang__54__page_10": 5, // Radio intercept report (5 regions)
-  "zipang__54__page_11": 6, // Bridge tactical analysis (6 regions)
-  "zipang__54__page_12": 5, // Officer discussion (5 regions)
-  "zipang__54__page_13": 7, // Tactical display review (7 regions)
-  "zipang__54__page_14": 6, // Crew station dialogue (6 regions)
-  "zipang__54__page_15": 4, // Mid-chapter action dialogue (4 regions)
-  "zipang__54__page_16": 6, // Sensor readout analysis (6 regions)
-  "zipang__54__page_17": 5, // Combat readiness discussion (5 regions)
-  "zipang__54__page_18": 6, // Commanding officer order (6 regions)
-  "zipang__54__page_19": 7, // Radio communications (7 regions)
-  "zipang__54__page_20": 5, // Tactical reaction dialogue (5 regions)
-  "zipang__54__page_21": 4, // Chapter closing dialogue (4 regions)
-};
+export type BenchmarkExecutionMode = "PRODUCTION_BBOX_TRANSLATION" | "FULL_PAGE_RECOGNITION";
 
-export async function runTrial1(options?: { dryRun?: boolean }) {
+export async function runTrial1(options?: {
+  dryRun?: boolean;
+  mode?: BenchmarkExecutionMode;
+  customManifestPath?: string;
+}) {
+  const mode: BenchmarkExecutionMode = options?.mode || "PRODUCTION_BBOX_TRANSLATION";
+
   console.log("=================================================================");
   console.log(" MANGA-THAI — Mission M1.5.1: Empirical Capacity Benchmark");
   console.log(" TRIAL #1: Zipang Chapter 54 Full-Chapter Vision Probe (22 Pages)");
-  console.log(` MODE: ${BENCHMARK_MODE} (EN->TH Workflow)`);
+  console.log(` EXECUTION MODE: ${mode} (EN->TH Workflow)`);
   console.log("=================================================================\n");
 
   const gateway = new BenchmarkTransportGateway();
-  const state = gateway.getLedgerState();
+  // Fail-closed check: resumed execution strictly requires existing ledger
+  const state = gateway.getLedgerState({ requireExisting: true });
 
   console.log(`Initial Mission Ledger State:`);
   console.log(`- Mission attempts consumed: ${state.missionAttemptsConsumed} / ${state.missionBudgetLimit}`);
@@ -74,6 +62,15 @@ export async function runTrial1(options?: { dryRun?: boolean }) {
     console.error("HARD SAFETY GATE: Mission budget exhausted! Aborting.");
     process.exit(1);
   }
+
+  // Load authoritative Chapter Region Manifest (139 regions across 22 pages)
+  const manifest = loadChapterManifest(options?.customManifestPath);
+  console.log(`Loaded Authoritative Region Manifest:`);
+  console.log(`- Chapter Key:            ${manifest.chapterKey}`);
+  console.log(`- Total Pages:            ${manifest.totalPages}`);
+  console.log(`- Total Dialogue Regions: ${manifest.totalDialogueRegions} (strictly detector-derived, NO handwritten values)\n`);
+
+  const manifestMap = new Map(manifest.pages.map((p) => [p.pageId, p]));
 
   // Extract all 22 pages portably (Strict: requires exactly 22 authentic pages)
   const pages = getZipangCorpusPages();
@@ -87,34 +84,68 @@ export async function runTrial1(options?: { dryRun?: boolean }) {
 
   for (const p of pages) {
     if (!p.base64Data) continue;
+    const manifestPage = manifestMap.get(p.id);
+
+    if (!manifestPage) {
+      throw new Error(`UNREGISTERED PAGE ERROR: Page '${p.id}' is missing from the region manifest.`);
+    }
+
+    // Verify source image hash against manifest
+    const sourceHash = computeSha256(p.base64Data);
+    if (sourceHash !== manifestPage.sourceImageSha256) {
+      throw new Error(
+        `SOURCE INTEGRITY ERROR: Source image hash mismatch for page '${p.id}'. Expected ${manifestPage.sourceImageSha256}, got ${sourceHash}`,
+      );
+    }
+
     totalImageBytes += p.jpegBytesLength;
 
-    const expectedCount = ZIPANG_54_PAGE_DIALOGUE_REGIONS[p.id] ?? 5;
-    totalExpectedDialogueBoxes += expectedCount;
+    if (mode === "PRODUCTION_BBOX_TRANSLATION") {
+      // Derive expected count strictly from manifest region count (matching bboxes.length)
+      const expectedCount = manifestPage.regionCount;
+      totalExpectedDialogueBoxes += expectedCount;
 
-    // Production Dialogue Contract: Exact non-negative integer expectedCount
-    expectedPages.push({
-      pageId: p.id,
-      expectedCount,
-    });
+      expectedPages.push({
+        pageId: p.id,
+        expectedCount,
+      });
 
-    const boxLabels = expectedCount > 0
-      ? `Numbered dialogue regions: ${Array.from({ length: expectedCount }, (_, i) => `Box ${i + 1}`).join(", ")}`
-      : "No dialogue (Cover/Art spread)";
+      const boxLabels = expectedCount > 0
+        ? `Numbered dialogue regions: ${Array.from({ length: expectedCount }, (_, i) => `Box ${i + 1}`).join(", ")}`
+        : "No dialogue (Cover/Art spread)";
 
-    parts.push({ text: `Page ${p.pageNumber} (ID: "${p.id}", ${boxLabels}):` });
-    parts.push({
-      inlineData: {
-        mimeType: p.mimeType,
-        data: p.base64Data,
-      },
-    });
+      parts.push({ text: `Page ${p.pageNumber} (ID: "${p.id}", ${boxLabels}):` });
+      parts.push({
+        inlineData: {
+          mimeType: p.mimeType,
+          data: p.base64Data,
+        },
+      });
+    } else {
+      // FULL_PAGE_RECOGNITION: exploratory whole-page vision experiment
+      expectedPages.push({
+        pageId: p.id,
+        expectedCount: -1, // dynamic recognition wildcard
+      });
+
+      parts.push({ text: `Page ${p.pageNumber} (ID: "${p.id}", Whole-Page Recognition):` });
+      parts.push({
+        inlineData: {
+          mimeType: p.mimeType,
+          data: p.base64Data,
+        },
+      });
+    }
   }
 
-  // Hard safety check: ensure no wildcard pages exist
-  if (expectedPages.some((p) => p.expectedCount < 0)) {
-    throw new Error(
-      "SAFETY REJECTION: Wildcard pages (expectedCount < 0) are strictly forbidden in production benchmark runs.",
+  if (mode === "PRODUCTION_BBOX_TRANSLATION") {
+    // Validate submission strictly against manifest: fails on any mismatch
+    validateSubmissionAgainstManifest(manifest, expectedPages);
+    console.log(`Manifest contract validation: PASSED (All 22 pages strictly match detector-derived region counts)`);
+  } else {
+    console.warn(
+      `[MODE NOTICE: FULL_PAGE_RECOGNITION]: This mode is an exploratory whole-page vision experiment.\n` +
+      `It does NOT provide production bounding-box coverage and CANNOT claim render-ready translations.`,
     );
   }
 
@@ -147,7 +178,8 @@ CRITICAL INSTRUCTIONS:
   "pages": [
 ${pages
   .map((p) => {
-    const count = ZIPANG_54_PAGE_DIALOGUE_REGIONS[p.id] ?? 5;
+    const manifestP = manifestMap.get(p.id)!;
+    const count = manifestP.regionCount;
     const transEx = Array.from({ length: count }, (_, i) => `"คำแปลบทพูด ${i + 1}"`).join(", ");
     const srcEx = Array.from({ length: count }, (_, i) => `"English dialogue ${i + 1}"`).join(", ");
     return `    {\n      "pageId": "${p.id}",\n      "translations": [${transEx}],\n      "sourceTexts": [${srcEx}]\n    }`;
@@ -163,7 +195,7 @@ ${pages
 3. "sourceTexts" MUST contain the original English text transcribed verbatim from that page.
 4. "translations" and "sourceTexts" arrays for each page MUST have the EXACT expected length:
 ${expectedPages.map((p) => `   - Page "${p.pageId}": exactly ${p.expectedCount} items`).join("\n")}
-5. If a page has no dialogue (e.g. page_0 cover art), output empty arrays: "translations": [], "sourceTexts": [].
+5. If a page has no dialogue (e.g. page_9 art spread with 0 regions), output empty arrays: "translations": [], "sourceTexts": [].
 6. Never mix up or swap dialogue between pages. Maintain strict pageId assignment for all 22 pages.
 `;
 
@@ -207,8 +239,8 @@ Output strictly the JSON structure without markdown code blocks.`;
     console.log(`- thoughtsTokenCount:   ${result.entry.usageMetadata.thoughtsTokenCount ?? 0}`);
     console.log(`- totalTokenCount:      ${result.entry.usageMetadata.totalTokenCount}`);
 
-    // M1.5.1 Correction: candidatesTokenCount and thoughtsTokenCount are separate instrumented counters from provider.
-    // They MUST NOT be subtracted!
+    // M1.5.1 Section 4: candidatesTokenCount and thoughtsTokenCount are separate instrumented counters from provider.
+    // They are NOT subtracted!
     if (pages.length > 0) {
       const cand = result.entry.usageMetadata.candidatesTokenCount || 0;
       const thoughts = result.entry.usageMetadata.thoughtsTokenCount || 0;
