@@ -289,6 +289,16 @@ export async function sendRequestToGemini(
         ...(data ? [{ inlineData: data }] : []),
       ];
 
+  const generationConfig: Record<string, any> = {
+    temperature,
+    responseMimeType: "application/json",
+  };
+  if (model.includes("3.") || model.includes("gemini-3")) {
+    generationConfig.thinkingConfig = {
+      thinkingLevel: "low",
+    };
+  }
+
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -305,17 +315,22 @@ export async function sendRequestToGemini(
           parts: requestParts,
         },
       ],
-      generationConfig: {
-        temperature,
-        responseMimeType: "application/json",
-      },
+      generationConfig,
     }),
   });
 
   if (!response.ok) {
-    const errorData = await response.json();
+    let errorMessage = response.statusText;
+    try {
+      const errorData = await response.json();
+      errorMessage = errorData.error?.message || response.statusText;
+    } catch {
+      try {
+        errorMessage = await response.text();
+      } catch {}
+    }
     throw new Error(
-      `Gemini API Error: ${errorData.error?.message || response.statusText}`,
+      `Gemini API Error: ${errorMessage}`,
     );
   }
 

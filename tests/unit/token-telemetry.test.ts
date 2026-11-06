@@ -127,4 +127,55 @@ describe("Gemini Token Telemetry (M1.4 ACTION D)", () => {
     // Explicitly verify they are NOT subtracted (i.e. candidatesTokenCount is not 500 - 320 = 180)
     expect(res.usageMetadata.candidatesTokenCount).not.toBe(500 - 320);
   });
+
+  it("Ponytail Ultra regression: sendRequestToGemini passes thinkingLevel 'low' for Gemini 3.x to prevent 180s timeouts", async () => {
+    let capturedBody: any = null;
+
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      capturedBody = JSON.parse(init?.body as string);
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: JSON.stringify({ translations: ["สวัสดี"] }) }],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as any;
+
+    await sendRequestToGemini(
+      "system prompt",
+      "user prompt",
+      "valid-key-xyz",
+      "gemini-3.7-flash",
+      0.3,
+    );
+
+    expect(capturedBody).toBeDefined();
+    expect(capturedBody.generationConfig?.thinkingConfig?.thinkingLevel).toBe("low");
+  });
+
+  it("Ponytail Ultra regression: sendRequestToGemini surfaces non-JSON 503 error cleanly without JSON parse error", async () => {
+    globalThis.fetch = mock(async () => {
+      return new Response("Service Unavailable: Overloaded", {
+        status: 503,
+        statusText: "Service Unavailable",
+        headers: { "Content-Type": "text/plain" },
+      });
+    }) as any;
+
+    await expect(
+      sendRequestToGemini(
+        "system prompt",
+        "user prompt",
+        "valid-key-xyz",
+        "gemini-3.7-flash",
+        0.3,
+      ),
+    ).rejects.toThrow(/Gemini API Error: Service Unavailable/i);
+  });
 });

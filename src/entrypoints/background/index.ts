@@ -824,9 +824,9 @@ export default defineBackground(() => {
           ? Math.max(300_000, inpaintBoxes * 60_000)
           : isLocalTranslate
             ? 480_000
-          : msg.type === "TRANSLATE_BATCH_IMAGES"
-            ? 240_000
-          : msg.type === "TRANSLATE_IMAGE" || msg.type === "INPAINT_IMAGE"
+          : msg.type === "TRANSLATE_BATCH_IMAGES" || msg.type === "TRANSLATE_IMAGE"
+            ? 300_000
+          : msg.type === "INPAINT_IMAGE"
             ? 180_000
             : 90_000;
 
