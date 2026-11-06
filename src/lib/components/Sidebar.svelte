@@ -18,6 +18,7 @@
   import { openSetupTab } from "@/lib/utils";
   import DetectionSettings from "./settings/DetectionSettings.svelte";
   import AutoTranslateToggle from "./settings/AutoTranslateToggle.svelte";
+  import ChapterPrepCard from "./settings/ChapterPrepCard.svelte";
   import OcrSettings from "./settings/OcrSettings.svelte";
   import BackendSettings from "./settings/BackendSettings.svelte";
   import TypographySettings from "./settings/TypographySettings.svelte";
@@ -52,6 +53,8 @@
   let serverApiKey = $state(DefaultConfig.serverApiKey);
   let geminiKey = $state("");
   let geminiModel = $state(DefaultConfig.geminiModels[0].id);
+  let geminiWorkflow = $state<"vision" | "text" | "vision-batch">(DefaultConfig.geminiWorkflow);
+  let geminiBatchVision = $state(DefaultConfig.geminiBatchVision);
   let cachedLlms = $state<string[]>([]);
   let textFont = $state(DefaultConfig.bundleFonts[0].id);
   let inpaintMethod = $state(DefaultConfig.inpaintMethod);
@@ -171,6 +174,7 @@
         "sync:ocr-min-confidence",
         "local:gemini-key",
         "sync:gemini-model",
+        "sync:gemini-workflow",
         "sync:detection-model",
         "sync:current-mode",
         "sync:source-lang",
@@ -202,6 +206,8 @@
         saved["sync:auto-translate-concurrency"] ?? autoTranslateConcurrency;
       geminiKey = saved["local:gemini-key"] ?? geminiKey;
       geminiModel = saved["sync:gemini-model"] ?? geminiModel;
+      geminiWorkflow = saved["sync:gemini-workflow"] ?? geminiWorkflow;
+      geminiBatchVision = saved["sync:gemini-batch-vision"] ?? geminiBatchVision;
       detectionModel = normalizeDetectionModel(saved["sync:detection-model"] ?? detectionModel);
       ocrMinConfidence = saved["sync:ocr-min-confidence"] ?? ocrMinConfidence;
       ocrEngine = saved["sync:ocr-engine"] ?? ocrEngine;
@@ -243,6 +249,8 @@
         { key: "sync:ocr-min-confidence", value: ocrMinConfidence },
         { key: "local:gemini-key", value: geminiKey },
         { key: "sync:gemini-model", value: geminiModel },
+        { key: "sync:gemini-workflow", value: geminiWorkflow },
+        { key: "sync:gemini-batch-vision", value: geminiBatchVision },
         { key: "sync:source-lang", value: sourceLang },
         { key: "sync:target-lang", value: targetLang },
         { key: "sync:detection-model", value: detectionModel },
@@ -270,7 +278,7 @@
     if (loadingSettings) return;
     [
       detectionMinConfidence, skipBboxRefining, autoTranslate, autoTranslateConcurrency, ocrMinConfidence, scriptGate,
-      geminiKey, geminiModel, sourceLang, targetLang, detectionModel, currentMode,
+      geminiKey, geminiModel, geminiWorkflow, geminiBatchVision, sourceLang, targetLang, detectionModel, currentMode,
       seriesContext.seriesName, seriesContext.summary, seriesContext.dictionary,
       textFont, customFonts.length, inpaintMethod, alwaysInpaint, llmModel, llmTemperature,
       serverHost, serverSchema, serverModel, useServerApiKey, serverApiKey, customRules.length,
@@ -283,7 +291,10 @@
   // loader while the download lands.
   $effect(() => {
     if (loadingSettings) return;
-    const isOcrMode = currentMode === "webgpu" || currentMode === "api";
+    const isOcrMode =
+      currentMode === "webgpu" ||
+      currentMode === "api" ||
+      (currentMode === "gemini" && geminiWorkflow === "text");
     const switchedToLocal = currentMode !== prevMode && isOcrMode;
     const groupChanged =
       resolveLangGroup(sourceLang).group !==
@@ -317,9 +328,6 @@
 
   function setMode(modeId: string) {
     currentMode = modeId;
-    if (modeId === "gemini") {
-      sourceLang = "Auto-Detect";
-    }
   }
 
   function swapLanguages() {
@@ -508,6 +516,8 @@
                   bind:serverApiKey
                   bind:geminiKey
                   bind:geminiModel
+                  bind:geminiWorkflow
+                  bind:geminiBatchVision
                   bind:cachedLlms
                 />
               </div>
@@ -577,6 +587,9 @@
                 </div>
               {/if}
             </div>
+
+            <!-- Chapter Preparation card -->
+            <ChapterPrepCard />
 
             <!-- Auto Translate engine card -->
             <AutoTranslateToggle

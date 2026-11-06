@@ -7,3 +7,10 @@ node_modules
 test-results
 playwright-report
 tests/output
+models/
+*.onnx
+benchmark-ledger.json
+benchmark-ledger.json.tmp
+benchmark-gateway.lock
+test-benchmark-ledger.json*
+trial-*-raw-response.json

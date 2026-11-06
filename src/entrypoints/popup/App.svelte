@@ -8,7 +8,15 @@
     TriangleAlert,
     Download,
     Compass,
+    BookOpen,
+    CheckCircle,
+    AlertTriangle,
+    XCircle,
+    Loader2,
+    Square,
+    Sparkles,
   } from "lucide-svelte";
+  import type { ChapterPrepProgress } from "@/entrypoints/content/chapter-prep";
   import { DefaultConfig, normalizeDetectionModel, normalizeLlmModel, resolveLangGroup } from "@/lib/configs";
   import { normalizeInpaintMethod } from "@/lib/inpaint/ladder";
   import { env } from "@/lib/env";
@@ -58,6 +66,8 @@
   // Backend / AI Keys
   let geminiKey = $state("");
   let geminiModel = $state(DefaultConfig.geminiModels[0].id);
+  let geminiWorkflow = $state<"vision" | "text" | "vision-batch">(DefaultConfig.geminiWorkflow);
+  let geminiBatchVision = $state(DefaultConfig.geminiBatchVision);
   let llmModel = $state(DefaultConfig.llmModels[0].id);
   let llmTemperature = $state(DefaultConfig.llmTemperature);
   let serverHost = $state(DefaultConfig.serverHost);
@@ -67,6 +77,37 @@
   let serverApiKey = $state(DefaultConfig.serverApiKey);
   let cachedLlms = $state<string[]>([]);
   let customRules = $state<SiteRule[]>([]);
+
+  // Chapter Preparation
+  let chapterPrep = $state<ChapterPrepProgress | null>(null);
+
+  async function refreshChapterStatus() {
+    try {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      if (tabs[0]?.id) {
+        const resp = await browser.tabs.sendMessage(tabs[0].id, {
+          type: "GET_CHAPTER_STATUS",
+        });
+        if (resp && resp.status) {
+          chapterPrep = resp;
+        }
+      }
+    } catch {}
+  }
+
+  async function triggerChapterPrep(action: "start" | "stop") {
+    try {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      if (tabs[0]?.id) {
+        const type =
+          action === "start" ? "START_CHAPTER_PREP" : "STOP_CHAPTER_PREP";
+        const resp = await browser.tabs.sendMessage(tabs[0].id, { type });
+        if (resp && resp.status) {
+          chapterPrep = resp;
+        }
+      }
+    } catch {}
+  }
 
   let seriesContext = $state<SeriesContext>({
     seriesName: "",
@@ -143,6 +184,7 @@
           "sync:ocr-min-confidence",
           "local:gemini-key",
           "sync:gemini-model",
+          "sync:gemini-workflow",
           "sync:detection-model",
           "sync:current-mode",
           "sync:source-lang",
@@ -177,6 +219,8 @@
       autoTranslateConcurrency = saved["sync:auto-translate-concurrency"] ?? autoTranslateConcurrency;
       geminiKey = saved["local:gemini-key"] ?? geminiKey;
       geminiModel = saved["sync:gemini-model"] ?? geminiModel;
+      geminiWorkflow = saved["sync:gemini-workflow"] ?? geminiWorkflow;
+      geminiBatchVision = saved["sync:gemini-batch-vision"] ?? geminiBatchVision;
       detectionModel = normalizeDetectionModel(saved["sync:detection-model"] ?? detectionModel);
       ocrMinConfidence = saved["sync:ocr-min-confidence"] ?? ocrMinConfidence;
       ocrEngine = saved["sync:ocr-engine"] ?? ocrEngine;
@@ -218,6 +262,8 @@
         { key: "sync:script-gate", value: scriptGate },
         { key: "local:gemini-key", value: geminiKey },
         { key: "sync:gemini-model", value: geminiModel },
+        { key: "sync:gemini-workflow", value: geminiWorkflow },
+        { key: "sync:gemini-batch-vision", value: geminiBatchVision },
         { key: "sync:source-lang", value: sourceLang },
         { key: "sync:target-lang", value: targetLang },
         { key: "sync:detection-model", value: detectionModel },
@@ -244,7 +290,7 @@
     if (loadingSettings) return;
     [
       detectionMinConfidence, skipBboxRefining, autoTranslate, autoTranslateConcurrency,
-      ocrMinConfidence, ocrEngine, scriptGate, geminiKey, geminiModel, sourceLang, targetLang,
+      ocrMinConfidence, ocrEngine, scriptGate, geminiKey, geminiModel, geminiWorkflow, geminiBatchVision, sourceLang, targetLang,
       detectionModel, currentMode, seriesContext.seriesName, seriesContext.summary, seriesContext.dictionary,
       textFont, customFonts.length, inpaintMethod, alwaysInpaint, llmModel, llmTemperature, serverHost, serverSchema,
       serverModel, useServerApiKey, serverApiKey, customRules.length,
@@ -254,7 +300,6 @@
 
   function setMode(modeId: string) {
     currentMode = modeId;
-    if (modeId === "gemini") sourceLang = "Auto-Detect";
   }
 
   function swapLanguages() {
@@ -343,9 +388,14 @@
 
   onMount(() => {
     loadSettings();
+    refreshChapterStatus();
+    const pollTimer = setInterval(refreshChapterStatus, 1500);
     const handleClick = () => (activeDropdown = null);
     window.addEventListener("click", handleClick);
-    return () => window.removeEventListener("click", handleClick);
+    return () => {
+      clearInterval(pollTimer);
+      window.removeEventListener("click", handleClick);
+    };
   });
 </script>
 
@@ -450,8 +500,8 @@
           {/if}
         {:else if currentMode === "gemini"}
           <div class="flex items-center justify-between text-xs text-[var(--text-dim)] px-1">
-            <span>Model: {geminiModel}</span>
-            <span class="{geminiKey ? 'text-[var(--accent-emerald)] font-medium' : 'text-[var(--accent-amber)] font-medium'}">
+            <span class="truncate">Model: {geminiModel} ({geminiWorkflow === 'text' ? 'Fast Text' : 'Vision'})</span>
+            <span class="{geminiKey ? 'text-[var(--accent-emerald)] font-medium shrink-0 ml-1' : 'text-[var(--accent-amber)] font-medium shrink-0 ml-1'}">
               {geminiKey ? "Key set" : "Needs key"}
             </span>
           </div>
@@ -540,6 +590,102 @@
             </div>
           </div>
         {/if}
+      </section>
+
+      <!-- ── SECTION 2.5: Chapter Preparation ── -->
+      <section class="panel-card !p-2.5 flex flex-col gap-2">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 min-w-0">
+            <div class="shrink-0 w-6 h-6 rounded-md border flex items-center justify-center bg-[var(--bg-void)] border-[var(--border-faint)] text-[var(--accent-cyan)]">
+              <BookOpen size={13} />
+            </div>
+            <div class="flex flex-col min-w-0">
+              <span class="text-xs font-semibold leading-tight text-[var(--text-primary)]">
+                Chapter Preparation
+              </span>
+              <span class="text-[10px] text-[var(--text-dim)] truncate">
+                {chapterPrep?.chapterTitle || (seriesContext.seriesName ? `${seriesContext.seriesName}` : "Pre-translate full chapter")}
+              </span>
+            </div>
+          </div>
+
+          <!-- Status badge -->
+          <div>
+            {#if chapterPrep?.status === "preparing"}
+              <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-[var(--accent-cyan-soft)] text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/40 animate-pulse">
+                <Loader2 size={10} class="animate-spin" />
+                {chapterPrep.completed}/{chapterPrep.discovered}
+              </span>
+            {:else if chapterPrep?.status === "ready"}
+              <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                <CheckCircle size={10} />
+                Ready ({chapterPrep.completed}/{chapterPrep.discovered})
+              </span>
+            {:else if chapterPrep?.status === "partial"}
+              <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                <AlertTriangle size={10} />
+                {chapterPrep.completed}/{chapterPrep.discovered}
+              </span>
+            {:else if chapterPrep?.status === "failed"}
+              <span class="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/30">
+                <XCircle size={10} />
+                Failed
+              </span>
+            {:else}
+              <span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-[var(--surface-panel-alt)] text-[var(--text-dim)] border border-[var(--border-faint)]">
+                Idle
+              </span>
+            {/if}
+          </div>
+        </div>
+
+        {#if chapterPrep && chapterPrep.discovered > 0}
+          <div class="w-full bg-[var(--bg-void)] h-1.5 rounded-full overflow-hidden border border-[var(--border-faint)]">
+            <div
+              class="h-full transition-all duration-300 {chapterPrep.status === 'ready'
+                ? 'bg-emerald-500'
+                : chapterPrep.status === 'partial'
+                  ? 'bg-amber-500'
+                  : chapterPrep.status === 'failed'
+                    ? 'bg-rose-500'
+                    : 'bg-[var(--accent-cyan)]'}"
+              style="width: {Math.min(100, Math.round(((chapterPrep.completed + chapterPrep.failed) / chapterPrep.discovered) * 100))}%;"
+            ></div>
+          </div>
+          <div class="flex items-center justify-between text-[10px] text-[var(--text-dim)]">
+            <span>Completed: <strong class="text-emerald-400 font-medium">{chapterPrep.completed}</strong> / {chapterPrep.discovered}</span>
+            {#if chapterPrep.failed > 0}
+              <span class="text-rose-400">{chapterPrep.failed} failed</span>
+            {/if}
+            {#if chapterPrep.elapsedSeconds !== undefined}
+              <span class="text-[var(--accent-cyan)]">{chapterPrep.elapsedSeconds}s</span>
+            {/if}
+          </div>
+        {/if}
+
+        <div class="flex items-center justify-between pt-0.5">
+          <span class="text-[10px] text-[var(--text-dim)] truncate max-w-[200px]">
+            {chapterPrep?.message || "Translate all pages in background"}
+          </span>
+          {#if chapterPrep?.status === "preparing"}
+            <button
+              type="button"
+              onclick={() => triggerChapterPrep("stop")}
+              class="px-2.5 py-1 text-xs font-medium rounded border border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors flex items-center gap-1 cursor-pointer"
+            >
+              <Square size={10} /> Stop
+            </button>
+          {:else}
+            <button
+              type="button"
+              onclick={() => triggerChapterPrep("start")}
+              class="px-2.5 py-1 text-xs font-semibold rounded border border-[var(--accent-cyan)]/40 bg-[var(--accent-cyan-soft)] text-[var(--accent-cyan)] hover:bg-[var(--accent-cyan)]/20 transition-all flex items-center gap-1 cursor-pointer"
+            >
+              <Sparkles size={11} />
+              {chapterPrep?.status === "ready" ? "Re-prepare" : "Prepare Chapter"}
+            </button>
+          {/if}
+        </div>
       </section>
 
       <!-- ── SECTION 3: Quick toggles (2x2 Grid) ── -->
@@ -693,6 +839,8 @@
             bind:serverApiKey
             bind:geminiKey
             bind:geminiModel
+            bind:geminiWorkflow
+            bind:geminiBatchVision
             bind:cachedLlms
           />
         </div>

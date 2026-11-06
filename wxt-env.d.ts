@@ -71,6 +71,24 @@ interface DebugEntry {
   timestamp: number;
   success: boolean;
   mode: string;
+  geminiWorkflow?: "vision" | "text" | "vision-batch";
+  fallback?: boolean;
+  fallbackReason?: string;
+  ocrBoxesTotal?: number;
+  ocrBoxesRecognized?: number;
+  ocrCompleteness?: number;
+  batchInfo?: {
+    batchSize: number;
+    isBatch: boolean;
+    batchDurationMs?: number;
+    companionSrc?: string;
+    usageMetadata?: {
+      promptTokenCount?: number;
+      candidatesTokenCount?: number;
+      thoughtsTokenCount?: number;
+      totalTokenCount?: number;
+    };
+  };
   version?: string;
   device?: string;
   backend?: "webgpu" | "wasm";
@@ -85,6 +103,7 @@ interface DebugEntry {
     ocr?: number;
     translate?: number;
     inpaint?: number;
+    render?: number;
     total?: number;
   };
   ocrMinConfidence?: number;
@@ -125,6 +144,12 @@ interface DebugEntry {
     llm?: string;
     server?: string;
   };
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
+    totalTokenCount?: number;
+  };
   error?: string;
 }
 
@@ -149,6 +174,10 @@ interface SiteRule {
   containerSelector?: string;
   /** CSS selector targeting chapter page <img> elements */
   imageSelector?: string;
+  /** CSS selector targeting total page count indicator or page select dropdown */
+  pageCountSelector?: string;
+  /** Optional regex to parse expected page count from pageCountSelector element text */
+  expectedCountRegex?: string;
   /** Where to anchor the floating translate pill on each image */
   pillPosition?: string,
   /** Where to initially position the floating toolbar overlay */

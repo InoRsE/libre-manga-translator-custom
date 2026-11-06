@@ -7,6 +7,24 @@ export type TranslateFn = (img: MangaTargetElement) => Promise<void>;
 
 export const MANUAL_CONCURRENCY = 3;
 
+export function findMountedImage(src: string): MangaTargetElement | null {
+  if (!src || typeof document === "undefined" || !document.body) return null;
+  const targetKey = Registry.srcKeyOf(src);
+
+  const candidates =
+    document.querySelectorAll<MangaTargetElement>("img, canvas");
+  for (let i = 0; i < candidates.length; i++) {
+    const el = candidates[i];
+    if (document.body.contains(el)) {
+      const elSrc = getElementSrc(el);
+      if (elSrc && (elSrc === src || Registry.srcKeyOf(elSrc) === targetKey)) {
+        return el;
+      }
+    }
+  }
+  return null;
+}
+
 export class AutoTranslateQueue {
   private queue: { img: MangaTargetElement; fn: TranslateFn }[] = [];
   // Slots are held for the full pipeline lifetime and released on the
@@ -99,15 +117,31 @@ export class AutoTranslateQueue {
   private drain(translateFn: (img: MangaTargetElement) => Promise<void>) {
     while (this.inFlight.size < this.concurrency && this.queue.length > 0) {
       const entry = this.queue.shift()!;
-      const targetImg = entry.img;
+      let targetImg = entry.img;
       const src = getElementSrc(targetImg);
-      if (!src || !document.body.contains(targetImg)) {
-        // Skip detached images without consuming a slot
-        if (src) this.seenKeys.delete(Registry.srcKeyOf(src));
-        continue;
+      const k = src ? Registry.srcKeyOf(src) : "";
+
+      // M1.4.2 REPAIR 2: Virtualized Page Lifecycle
+      // Never treat a detached DOM reference as a usable page asset.
+      // If the queued element was unmounted by reader virtualization, attempt to find
+      // the currently remounted DOM element for this page.
+      if (!targetImg || !document.body.contains(targetImg)) {
+        const remounted = src ? findMountedImage(src) : null;
+        if (remounted && document.body.contains(remounted)) {
+          targetImg = remounted;
+        } else {
+          // Explicit failure: element is detached and not currently mounted in DOM.
+          // Never silently skip! Explicitly release slot and mark idle so listeners
+          // (such as ChapterPreparationManager) can account for the failure and avoid hanging.
+          console.warn(`[LMT Queue] Page element detached from DOM for src: ${src}`);
+          if (k && src) {
+            this.seenKeys.delete(k);
+            Registry.markIdle(src);
+          }
+          continue;
+        }
       }
       // Strict registry guard at drain time as well (covers race between enqueue and drain)
-      const k = Registry.srcKeyOf(src);
       if (Registry.isPending(k) || this.inFlight.has(k)) {
         continue;
       }
@@ -204,6 +238,14 @@ export class AutoTranslateOrchestrator {
     if (this.translateFn) {
       this.queue.enqueue(img, this.translateFn);
     }
+  }
+
+  getActiveRule(): SiteRule | null {
+    return this.activeRule;
+  }
+
+  getQueue(): AutoTranslateQueue {
+    return this.queue;
   }
 
   /** Unified cap: slider 1..10 when auto ON, absolute 3 when OFF. */
