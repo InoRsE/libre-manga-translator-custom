@@ -25,7 +25,9 @@ import { env } from "@/lib/env";
 async function detectBackend(): Promise<"webgpu" | "wasm"> {
   try {
     if ("gpu" in navigator) {
-      const adapter = await (navigator.gpu as any).requestAdapter({ powerPreference: "high-performance" });
+      const adapterPromise = (navigator.gpu as any).requestAdapter({ powerPreference: "high-performance" });
+      const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 2000));
+      const adapter = await Promise.race([adapterPromise, timeoutPromise]);
       if (adapter) return "webgpu";
     }
   } catch {
@@ -225,7 +227,7 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
             gateSkip: ocrResults.map((r) => r.gateSkip ?? null),
             gate: ocrGate,
             timing: { ocr: ocrDuration, translate: transDuration },
-            backend: await detectBackend(),
+            backend: undefined,
             geminiWorkflow: "text",
             fallback: false,
             ocrBoxesTotal: totalBoxes,
@@ -263,7 +265,7 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
               ...(ocrDuration > 0 ? { ocr: ocrDuration } : {}),
               translate: visionDuration,
             },
-            backend: await detectBackend(),
+            backend: undefined,
             geminiWorkflow: "text",
             fallback: true,
             fallbackReason,
@@ -296,7 +298,7 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
           gateSkip: new Array(bboxes.length).fill(null),
           gate: { mode: "off", checked: 0, skipped: 0, unavailable: false },
           timing: { translate: performance.now() - tTrans },
-          backend: await detectBackend(),
+          backend: undefined,
           geminiWorkflow: "vision",
           fallback: false,
         });
@@ -333,7 +335,7 @@ browser.runtime.onMessage.addListener((msg, _, sendResponse) => {
       sendResponse({
         ...res,
         timing: { translate: transDuration },
-        backend: await detectBackend(),
+        backend: undefined,
         geminiWorkflow: "vision-batch",
         fallback: false,
       });
